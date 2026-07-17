@@ -7,6 +7,9 @@ import uvicorn
 from mcp.server.fastmcp import FastMCP
 from starlette.responses import JSONResponse
 
+from adapters.base import DeviceAdapter, DeviceResult
+from adapters.mock import MockAdapter
+
 # 铁律 5/6：host/port 可配置，带合理默认值
 HOST = os.environ.get("BODYBRIDGE_HOST", "127.0.0.1")
 PORT = int(os.environ.get("BODYBRIDGE_PORT", "8000"))
@@ -26,6 +29,44 @@ mcp = FastMCP(
 def ping() -> str:
     """健康检查：确认 bodybridge 桥活着。"""
     return "pong"
+
+
+# --- 设备 Adapter 插槽层（第 3 层）------------------------------------------
+# 桥身只依赖抽象 DeviceAdapter，不认具体设备。换真设备只改下面这一行实例化，
+# 三个工具、_safe、整个桥身都不动 —— 这就是依赖倒置 + 桥身求薄。
+device: DeviceAdapter = MockAdapter()
+
+
+async def _safe(coro) -> dict:
+    """安全网：Adapter 万一漏抛异常，也兜成友好信封，保证服务永不 500。
+    设备级失败走的是 ok=False 的正常返回（不是 isError），从根上避开
+    MCP 的 isError/outputSchema 撞车坑。"""
+    try:
+        return (await coro).to_dict()
+    except Exception as e:
+        return DeviceResult.failure(
+            "internal_error",
+            f"设备适配器内部异常，已兜底（{type(e).__name__}）。",
+            retryable=True,
+        ).to_dict()
+
+
+@mcp.tool()
+async def device_list_capabilities() -> dict:
+    """列出设备支持的指令清单（send_command 能用哪些 command）。"""
+    return await _safe(device.list_capabilities())
+
+
+@mcp.tool()
+async def device_get_status() -> dict:
+    """查询设备当前状态。"""
+    return await _safe(device.get_status())
+
+
+@mcp.tool()
+async def device_send_command(command: str, params: dict | None = None) -> dict:
+    """向设备发送一个指令；command 见 device_list_capabilities。"""
+    return await _safe(device.send_command(command, params))
 
 
 # --- 鉴权守门层（第 2 层）---------------------------------------------------
