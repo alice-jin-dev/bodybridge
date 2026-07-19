@@ -1,4 +1,5 @@
 """bodybridge — MCP Server 层 + 鉴权守门层（最小可跑版本）"""
+import contextlib
 import hmac
 import os
 import sys
@@ -67,6 +68,52 @@ async def device_get_status() -> dict:
 async def device_send_command(command: str, params: dict | None = None) -> dict:
     """向设备发送一个指令；command 见 device_list_capabilities。"""
     return await _safe(device.send_command(command, params))
+
+
+# --- 生命周期接线 -----------------------------------------------------------
+# setup/teardown 必须跑在服务器的事件循环里（长连接的 socket 换个 loop 就废），
+# 所以挂在 ASGI app 的 lifespan 上（见 __main__ 的包裹）。桥这侧只负责：兜底
+# 兜异常 + 打印说人话的日志；Adapter 那侧只负责返回信封。
+
+
+async def _boot_device() -> None:
+    """桥启动：调 setup。失败绝不 sys.exit——桥照常起、设备走 offline 兜底信封，
+    存活不被单台设备绑架（桥身求薄 + 小狗歪头）。但日志要把真实原因暴露够清楚
+    （铁律 4：说人话、暴露原因），让人一眼看出是设备离线还是配置写错。"""
+    try:
+        result = await device.setup()
+    except Exception as e:
+        # Adapter 违约漏抛（不该发生），也兜住，桥照样活
+        print(
+            f"[bodybridge] device setup raised, caught; bridge keeps starting "
+            f"({type(e).__name__}: {e}). Device will fall back to offline -- "
+            f"please investigate the exception above.",
+            file=sys.stderr,
+        )
+        return
+    if result.ok:
+        print(f"[bodybridge] device setup ok: {result.message}", file=sys.stderr)
+    else:
+        # 醒目 + 暴露原因：error 机器码 + 人话 message 全给出来
+        print(
+            f"[bodybridge] device setup FAILED (error={result.error}): {result.message}\n"
+            f"  Bridge still starts; device is currently unavailable -- later calls "
+            f"will get an offline fallback envelope.\n"
+            f"  If this looks like a bad address/credential, fix the device config "
+            f"and restart the bridge.",
+            file=sys.stderr,
+        )
+
+
+async def _shutdown_device() -> None:
+    """桥关闭：调 teardown。契约保证它不抛，这里再兜一层，确保关闭流程不被搅乱。"""
+    try:
+        await device.teardown()
+    except Exception as e:
+        print(
+            f"[bodybridge] device teardown raised, ignored ({type(e).__name__}: {e}).",
+            file=sys.stderr,
+        )
 
 
 # --- 鉴权守门层（第 2 层）---------------------------------------------------
@@ -139,5 +186,21 @@ if __name__ == "__main__":
         sys.exit(1)
 
     app = mcp.streamable_http_app()
+
+    # 包裹（而非替换）SDK 写死的 lifespan：在它前后插入 setup/teardown。
+    # 这样两件事都跑在 uvicorn 的事件循环里，且 SDK 一行没动（桥身求薄）。
+    _inner_lifespan = app.router.lifespan_context
+
+    @contextlib.asynccontextmanager
+    async def lifespan(app):
+        await _boot_device()              # 早于第一个请求
+        try:
+            async with _inner_lifespan(app):   # SDK 原有 lifespan 照常
+                yield
+        finally:
+            await _shutdown_device()      # 进程退出前兜底清理
+
+    app.router.lifespan_context = lifespan
+
     app.add_middleware(BearerAuthMiddleware, token=TOKEN)
     uvicorn.run(app, host=HOST, port=PORT)

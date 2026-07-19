@@ -80,3 +80,28 @@ class DeviceAdapter(ABC):
 
         能力是"设备能做什么"的静态元数据，设备断线也答得出，故通常 ok=True。
         """
+
+    # --- 生命周期钩子（可选）------------------------------------------------
+    # 下面两个不是 @abstractmethod：带默认空实现，不需要初始化的简单 Adapter
+    # 可以完全不管它们，白继承 no-op。需要长连接的设备（如 WebSocket）才覆盖。
+    # __init__ 只做廉价的内存构造（永不 I/O）；真正的连接/登录留到 setup。
+
+    async def setup(self) -> DeviceResult:
+        """桥启动时调用一次，用来建立连接、登录设备、准备资源。
+
+        跑在桥的事件循环里（见 server.py 的 lifespan 包裹）。
+        返回 DeviceResult；和三方法一样永不抛异常——连不上就 ok=False 如实告知，
+        桥据此打印醒目日志但仍照常启动（桥身求薄，不被设备死活绑架）。
+        默认：无需初始化，直接成功。
+        """
+        # 注意：这条 message 只会进 server 的 stderr 运维日志、永不发给 Claude，
+        # 属"经控制台"类，故用 ASCII 英文（面向全球开发者，任何控制台不乱码）。
+        return DeviceResult.success("no setup needed.")
+
+    async def teardown(self) -> None:
+        """桥关闭时调用一次，用来断开连接、释放资源、清理。
+
+        无返回、永不抛异常：清理阶段没有"返回给谁"，抛异常又是关闭期经典 bug，
+        故从签名上就摁死——只管尽力清理。默认：什么都不做。
+        """
+        return None
