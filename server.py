@@ -6,6 +6,7 @@ import sys
 
 import uvicorn
 from mcp.server.fastmcp import FastMCP
+from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from adapters.base import DeviceAdapter, DeviceResult
@@ -17,6 +18,45 @@ PORT = int(os.environ.get("BODYBRIDGE_PORT", "8000"))
 
 # 铁律 5：token 是鉴权必填项，没有安全默认值，走"明确必填提示"这条腿
 TOKEN = os.environ.get("BODYBRIDGE_TOKEN", "").strip()
+
+
+def _resolve_public_url() -> tuple[str, str | None]:
+    """解析桥的公网基址，供 OAuth 元数据（RFC 9728/8414）用。
+    返回 (基址_去尾斜杠, 警告文案_或_None)。
+
+    铁律 3/5：显式配置优先；缺失或坏值绝不崩服务——回退到本地地址并把一句
+    ASCII 警告交回给 __main__ 打印（本地控制台可能是 GBK，输出必须纯 ASCII）。
+    """
+    raw = os.environ.get("BODYBRIDGE_PUBLIC_URL", "").strip()
+    local = f"http://{HOST}:{PORT}"
+    if not raw:
+        return local, (
+            "[bodybridge] warning: BODYBRIDGE_PUBLIC_URL is not set; "
+            f"falling back to {local} for OAuth metadata.\n"
+            "  CIMD discovery from claude.ai needs a PUBLIC https base URL.\n"
+            "  Set it for real deployment: "
+            "BODYBRIDGE_PUBLIC_URL=https://bridge.example.com"
+        )
+    normalized = raw.rstrip("/")
+    if not (normalized.startswith("http://") or normalized.startswith("https://")):
+        # 坏值也要说人话、暴露原因（铁律 4），但先 ASCII 化防 GBK 乱码
+        safe = raw.encode("ascii", "replace").decode("ascii")
+        return local, (
+            f"[bodybridge] warning: BODYBRIDGE_PUBLIC_URL='{safe}' is malformed "
+            "(must start with http:// or https://); "
+            f"falling back to {local} for OAuth metadata.\n"
+            "  Fix it: BODYBRIDGE_PUBLIC_URL=https://bridge.example.com"
+        )
+    if normalized != raw:
+        return normalized, (
+            "[bodybridge] note: trailing slash stripped from "
+            f"BODYBRIDGE_PUBLIC_URL (using {normalized})."
+        )
+    return normalized, None
+
+
+# 铁律 3/5：坏值/缺失回退本地 + 警告；/mcp 由代码拼，PUBLIC_URL 不含 /mcp、不含尾斜杠
+PUBLIC_URL, _PUBLIC_URL_WARNING = _resolve_public_url()
 
 mcp = FastMCP(
     "bodybridge",
@@ -116,6 +156,53 @@ async def _shutdown_device() -> None:
         )
 
 
+# --- OAuth 元数据端点（第 2 层 · CIMD 发现）--------------------------------
+# 只做"让 claude.ai 能发现我们"的最小部分：两份公开 JSON 元数据。
+# 这些端点必须免鉴权（Claude 在拿到 token 之前就来拉），豁免见下面中间件白名单。
+# 关键 CIMD 开关：AS 元数据声明 client_id_metadata_document_supported=true 且
+# token_endpoint_auth_methods_supported 含 "none"，且【绝不】写 registration_endpoint
+# ——这样 Claude 选 CIMD 而非 DCR（依据 MCP 2025-11-25 授权规范 + Anthropic 连接器文档）。
+# authorize / token 端点是第 2/3 步才建，这里只在元数据里声明其地址。
+
+
+def _protected_resource_metadata() -> dict:
+    """RFC 9728 受保护资源元数据。resource 必须与用户在 Claude 里输入的 URL 逐字符一致。"""
+    return {
+        "resource": f"{PUBLIC_URL}/mcp",
+        "authorization_servers": [PUBLIC_URL],
+        "bearer_methods_supported": ["header"],
+        "scopes_supported": ["mcp"],
+    }
+
+
+# 主路径：带 /mcp 后缀（Claude 优先探测这个）；根路径：兜底，返回同一份文档
+@mcp.custom_route("/.well-known/oauth-protected-resource/mcp", methods=["GET"])
+async def oauth_protected_resource_mcp(request: Request) -> JSONResponse:
+    return JSONResponse(_protected_resource_metadata())
+
+
+@mcp.custom_route("/.well-known/oauth-protected-resource", methods=["GET"])
+async def oauth_protected_resource_root(request: Request) -> JSONResponse:
+    return JSONResponse(_protected_resource_metadata())
+
+
+@mcp.custom_route("/.well-known/oauth-authorization-server", methods=["GET"])
+async def oauth_authorization_server(request: Request) -> JSONResponse:
+    """RFC 8414 授权服务器元数据。"""
+    return JSONResponse({
+        "issuer": PUBLIC_URL,
+        "authorization_endpoint": f"{PUBLIC_URL}/oauth/authorize",
+        "token_endpoint": f"{PUBLIC_URL}/oauth/token",
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code"],
+        "code_challenge_methods_supported": ["S256"],
+        "token_endpoint_auth_methods_supported": ["none"],
+        "client_id_metadata_document_supported": True,
+        "scopes_supported": ["mcp"],
+        # 故意不声明 registration_endpoint：我们走 CIMD，不做 DCR。
+    })
+
+
 # --- 鉴权守门层（第 2 层）---------------------------------------------------
 # 纯 ASGI 中间件：请求进来时只看一眼 Authorization 头，要么当场 401、要么原样
 # 放行，完全不碰响应流（避免 BaseHTTPMiddleware 掐断 streamable-http 的 SSE 长流）。
@@ -141,6 +228,16 @@ def _unauthorized(message: str) -> JSONResponse:
     )
 
 
+# OAuth 发现/授权端点必须公开（Claude 拿 token 前就要访问），这里前缀匹配放行。
+# str.startswith 接受元组，任一前缀命中即公开。/oauth/* 现在还没建（404）也无妨。
+_PUBLIC_PATH_PREFIXES = (
+    "/.well-known/oauth-protected-resource",
+    "/.well-known/oauth-authorization-server",
+    "/oauth/authorize",
+    "/oauth/token",
+)
+
+
 class BearerAuthMiddleware:
     def __init__(self, app, token: str):
         self.app = app
@@ -164,6 +261,9 @@ class BearerAuthMiddleware:
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":  # 非 HTTP（如 lifespan）直接放行
             return await self.app(scope, receive, send)
+        # 公开路径白名单：只在最前面加这道跳过，下面的 token 校验逻辑一个字不动。
+        if scope.get("path", "").startswith(_PUBLIC_PATH_PREFIXES):
+            return await self.app(scope, receive, send)
         auth = dict(scope.get("headers", [])).get(b"authorization")
         reason = self._reason_to_reject(auth)
         if reason is not None:
@@ -184,6 +284,9 @@ if __name__ == "__main__":
             file=sys.stderr,
         )
         sys.exit(1)
+
+    if _PUBLIC_URL_WARNING:  # 铁律 5：PUBLIC_URL 缺失/坏值不拒启，但要醒目提示
+        print(_PUBLIC_URL_WARNING, file=sys.stderr)
 
     app = mcp.streamable_http_app()
 
