@@ -1,14 +1,16 @@
 """bodybridge — MCP Server 层 + 鉴权守门层（最小可跑版本）"""
 import contextlib
-import hmac
+import html
 import os
 import sys
+from urllib.parse import quote as urlquote, urlsplit
 
 import uvicorn
 from mcp.server.fastmcp import FastMCP
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
+import oauth_cimd
 from adapters.base import DeviceAdapter, DeviceResult
 from adapters.mock import MockAdapter
 
@@ -18,6 +20,19 @@ PORT = int(os.environ.get("BODYBRIDGE_PORT", "8000"))
 
 # 铁律 5：token 是鉴权必填项，没有安全默认值，走"明确必填提示"这条腿
 TOKEN = os.environ.get("BODYBRIDGE_TOKEN", "").strip()
+
+# 铁律 5：/oauth/authorize 的密码门禁，同样没有安全默认值，缺了直接拒启（与
+# TOKEN 同一先例：第 5 步接完中间件后，没密码这条 OAuth 路径就是废的，fail fast
+# 比"桥能起但神秘地授权不了"诚实）。
+PASSWORD = os.environ.get("BODYBRIDGE_PASSWORD", "").strip()
+
+# 可选：CIMD 抓取的 host 白名单。默认空 = 通用防护（不限 host，但下面一系列
+# SSRF 防护照做）；设了就只放行这些 host，给想锁死的用户自由。
+_raw_cimd_allowlist = os.environ.get("BODYBRIDGE_CIMD_ALLOWLIST", "").strip()
+CIMD_ALLOWLIST = (
+    frozenset(h.strip() for h in _raw_cimd_allowlist.split(",") if h.strip())
+    if _raw_cimd_allowlist else None
+)
 
 
 def _resolve_public_url() -> tuple[str, str | None]:
@@ -203,6 +218,204 @@ async def oauth_authorization_server(request: Request) -> JSONResponse:
     })
 
 
+# --- OAuth 授权端点（第 2 层 · CIMD 校验 + PKCE）----------------------------
+# CIMD 校验、SSRF 防护的实现全在 oauth_cimd.py（可独立单测）。这里只负责：
+# 参数校验编排、渲染极简密码页、发放签名授权码。
+#
+# 参数校验分两段，这是防开放重定向的根本（RFC 6749 §4.1.2.1）：
+#   前 4 项（client_id / CIMD fetch / client_id 自证 / redirect_uri 精确匹配）
+#   任何一项失败 —— 直接错误页，绝不重定向（此时 redirect_uri 还不可信）。
+#   之后（response_type / code_challenge / code_challenge_method）失败 ——
+#   可以带 error= 重定向回去（redirect_uri 此时已确认可信）。
+#
+# 授权码：签名+短时效自包含（无状态），但"一次性"靠一个极小的、自我过期的
+# jti 已用集合（见 oauth_cimd.redeem_authorization_code 的取舍说明）。
+
+_AUTH_CODE_TTL_SECONDS = 90
+_used_code_jtis: dict[str, float] = {}
+
+_AUTHORIZE_HEADERS = {"X-Frame-Options": "DENY", "Cache-Control": "no-store"}
+
+
+def _esc(value) -> str:
+    """所有回显到 HTML 里的用户输入/远端数据，一律转义。内联拼 HTML 就是
+    XSS 温床——state、client_id、client_name（来自远端 CIMD 文档，不可信）
+    都必须过这一道。"""
+    return html.escape(str(value), quote=True)
+
+
+def _authorize_error_page(message: str, status: int = 400) -> HTMLResponse:
+    """前 4 项校验失败用这个：直接报错，绝不重定向（redirect_uri 还不可信）。"""
+    body = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>bodybridge - Authorization Error</title></head>
+<body style="font-family:sans-serif;max-width:32rem;margin:4rem auto;color:#222">
+<h2>Authorization request rejected</h2>
+<p>{_esc(message)}</p>
+</body></html>"""
+    return HTMLResponse(body, status_code=status, headers=_AUTHORIZE_HEADERS)
+
+
+def _authorize_form_html(*, client_id, client_name, redirect_uri, state,
+                          code_challenge, code_challenge_method, resource,
+                          error: str = "") -> str:
+    err_html = f'<p style="color:#b00020">{_esc(error)}</p>' if error else ""
+    resource_field = (
+        f'<input type="hidden" name="resource" value="{_esc(resource)}">'
+        if resource else ""
+    )
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>bodybridge - Authorize</title></head>
+<body style="font-family:sans-serif;max-width:24rem;margin:4rem auto;color:#222">
+<h2>Authorize {_esc(client_name)}</h2>
+<p>This app wants to connect to your bodybridge.</p>
+<form method="POST">
+<input type="hidden" name="client_id" value="{_esc(client_id)}">
+<input type="hidden" name="redirect_uri" value="{_esc(redirect_uri)}">
+<input type="hidden" name="state" value="{_esc(state)}">
+<input type="hidden" name="code_challenge" value="{_esc(code_challenge)}">
+<input type="hidden" name="code_challenge_method" value="{_esc(code_challenge_method)}">
+{resource_field}
+<input type="password" name="password" placeholder="Bridge password" autofocus>
+<button type="submit">Authorize</button>
+</form>
+{err_html}
+</body></html>"""
+
+
+def _redirect_with(redirect_uri: str, params: dict) -> RedirectResponse:
+    """拼接重定向 URL；跟 OB 一样的 sep 判断写法，外加 Cache-Control: no-store
+    （OAuth 规范要求：带授权码/错误信息的响应不能被缓存）。"""
+    sep = "&" if "?" in redirect_uri else "?"
+    query = "&".join(
+        f"{k}={urlquote(str(v))}" for k, v in params.items() if v
+    )
+    location = f"{redirect_uri}{sep}{query}" if query else redirect_uri
+    return RedirectResponse(location, status_code=302,
+                             headers={"Cache-Control": "no-store"})
+
+
+def _validate_authorize_request(params: dict):
+    """校验 /oauth/authorize 的参数。GET、POST 共用同一份逻辑——POST 的隐藏字段
+    不被信任，原样重新走一遍这里，而不是假设 GET 已经验过了（这正是绕开 OB 那个
+    "client_info 为 None 时跳过 redirect_uri 校验"缺口的关键：我们没有本地注册表
+    可查，CIMD fetch 本身就是唯一的"注册检查"，不允许有跳过路径）。
+
+    返回 (stage, payload)：
+      "trusted_error"  -> payload 是 HTMLResponse，直接返回，不重定向
+      "redirect_error"  -> payload 是 (redirect_uri, error, description)
+      "ok"              -> payload 是校验通过的字典
+    """
+    client_id = params.get("client_id", "")
+    if not client_id.startswith("https://"):
+        return "trusted_error", _authorize_error_page(
+            "client_id must be an https:// URL (a Client ID Metadata Document)."
+        )
+    if not urlsplit(client_id).path.strip("/"):
+        return "trusted_error", _authorize_error_page(
+            "client_id URL must contain a path component."
+        )
+
+    fetch = oauth_cimd.fetch_cimd_document(client_id, allowlist_hosts=CIMD_ALLOWLIST)
+    if not fetch.ok:
+        return "trusted_error", _authorize_error_page(
+            f"could not verify client identity: {fetch.error}"
+        )
+
+    redirect_uri = params.get("redirect_uri", "")
+    if redirect_uri not in fetch.document.get("redirect_uris", []):
+        return "trusted_error", _authorize_error_page(
+            "redirect_uri does not match any redirect_uris in the client's "
+            "metadata document."
+        )
+
+    # --- redirect_uri 从此可信，以下错误可以带 error= 重定向回去 ---
+    if params.get("response_type") != "code":
+        return "redirect_error", (
+            redirect_uri, "unsupported_response_type",
+            "only response_type=code is supported",
+        )
+
+    code_challenge = params.get("code_challenge", "")
+    if not oauth_cimd.is_valid_code_challenge(code_challenge):
+        return "redirect_error", (
+            redirect_uri, "invalid_request",
+            "code_challenge is missing or malformed (must be S256, 43-128 chars)",
+        )
+
+    if params.get("code_challenge_method") != "S256":
+        return "redirect_error", (
+            redirect_uri, "invalid_request",
+            "code_challenge_method must be S256",
+        )
+
+    return "ok", {
+        "client_id": client_id,
+        "client_name": fetch.document.get("client_name", client_id),
+        "redirect_uri": redirect_uri,
+        "state": params.get("state", ""),
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
+        # resource 存在则记录（供未来 token 端点做 audience 绑定），缺失不拒绝。
+        "resource": params.get("resource") or None,
+    }
+
+
+@mcp.custom_route("/oauth/authorize", methods=["GET", "POST"])
+async def oauth_authorize(request: Request):
+    if request.method == "GET":
+        params = dict(request.query_params)
+    else:
+        try:
+            form = await request.form()
+        except Exception:
+            return _authorize_error_page("could not parse form submission.")
+        params = {k: str(v) for k, v in form.items()}
+
+    stage, payload = _validate_authorize_request(params)
+
+    if stage == "trusted_error":
+        return payload
+    if stage == "redirect_error":
+        redirect_uri, error, description = payload
+        return _redirect_with(redirect_uri, {
+            "error": error,
+            "error_description": description,
+            "state": params.get("state") or None,
+        })
+
+    validated = payload  # 校验通过的字典
+
+    if request.method == "GET":
+        return HTMLResponse(_authorize_form_html(**validated),
+                             headers=_AUTHORIZE_HEADERS)
+
+    # POST：参数已经重新校验过；现在查密码。密码比对走 _password_matches，
+    # 全角字符/超长/空值/二进制乱码——任何输入都归 try/except 兜底，绝不 500。
+    presented_password = params.get("password", "")
+    if not _password_matches(presented_password):
+        return HTMLResponse(
+            _authorize_form_html(
+                **validated, error="Incorrect password, please try again.",
+            ),
+            status_code=401,
+            headers=_AUTHORIZE_HEADERS,
+        )
+
+    code = oauth_cimd.issue_authorization_code(
+        TOKEN,
+        client_id=validated["client_id"],
+        redirect_uri=validated["redirect_uri"],
+        code_challenge=validated["code_challenge"],
+        code_challenge_method=validated["code_challenge_method"],
+        resource=validated["resource"],
+        ttl_seconds=_AUTH_CODE_TTL_SECONDS,
+    )
+    return _redirect_with(validated["redirect_uri"], {
+        "code": code,
+        "state": validated["state"] or None,
+    })
+
+
 # --- 鉴权守门层（第 2 层）---------------------------------------------------
 # 纯 ASGI 中间件：请求进来时只看一眼 Authorization 头，要么当场 401、要么原样
 # 放行，完全不碰响应流（避免 BaseHTTPMiddleware 掐断 streamable-http 的 SSE 长流）。
@@ -211,12 +424,15 @@ async def oauth_authorization_server(request: Request) -> JSONResponse:
 
 
 def _token_matches(presented: str, expected: str) -> bool:
-    """常量时间比对，防时序攻击。两边都 encode 成 bytes，全角等非 ASCII 字符
-    只会匹配不上，绝不抛异常、绝不崩。任何意外都归为"不匹配"。"""
-    try:
-        return hmac.compare_digest(presented.encode("utf-8"), expected.encode("utf-8"))
-    except Exception:
-        return False
+    """常量时间比对，防时序攻击、防全角字符崩服务。实际实现是共享的
+    oauth_cimd.safe_compare——token 比对、/oauth/authorize 密码比对、授权码
+    签名比对，全走这一个安全模式，只维护一处（铁律 3 血泪的教训）。"""
+    return oauth_cimd.safe_compare(presented, expected)
+
+
+def _password_matches(presented: str) -> bool:
+    """/oauth/authorize 密码门禁，同一个安全比较模式。"""
+    return oauth_cimd.safe_compare(presented, PASSWORD)
 
 
 def _unauthorized(message: str) -> JSONResponse:
@@ -285,6 +501,17 @@ if __name__ == "__main__":
             "  It is required for auth. Without it the service would be open to anyone,\n"
             "  so startup is refused.\n"
             "  Set it (PowerShell):  $env:BODYBRIDGE_TOKEN = 'your-secret'",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if not PASSWORD:
+        print(
+            "[bodybridge] fatal: environment variable BODYBRIDGE_PASSWORD is not set.\n"
+            "  It gates /oauth/authorize, the page CIMD clients (e.g. claude.ai) use\n"
+            "  to obtain a token. Without it that flow cannot work at all, so startup\n"
+            "  is refused -- failing fast beats starting up with OAuth silently broken.\n"
+            "  Set it (PowerShell):  $env:BODYBRIDGE_PASSWORD = 'your-secret'",
             file=sys.stderr,
         )
         sys.exit(1)
