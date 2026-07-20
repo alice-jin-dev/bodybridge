@@ -14,9 +14,48 @@ import oauth_cimd
 from adapters.base import DeviceAdapter, DeviceResult
 from adapters.mock import MockAdapter
 
-# 铁律 5/6：host/port 可配置，带合理默认值
-HOST = os.environ.get("BODYBRIDGE_HOST", "127.0.0.1")
-PORT = int(os.environ.get("BODYBRIDGE_PORT", "8000"))
+# 铁律 5/6：host 默认监听所有网卡——桥的定位就是被公网访问，且鉴权已强制
+# （缺 TOKEN/PASSWORD 直接拒启），默认只听本机反而跟定位相反。用户显式设
+# BODYBRIDGE_HOST 依然生效，覆盖这个默认值；这里不做"侦测到 PORT 就自动切
+# 0.0.0.0"这类隐式适配——隐式回退路径易误解，跟 PUBLIC_URL 当初否掉同类
+# 方案 c（自动侦测+回退）是同一个理由。
+HOST = os.environ.get("BODYBRIDGE_HOST", "0.0.0.0")
+
+
+def _resolve_port() -> tuple[int, str, str | None]:
+    """监听端口优先级：PORT（Heroku/Railway/Render/Zeabur 等云平台注入的
+    通行约定，Zeabur 官方文档："Zeabur uses environment variable PORT to
+    determine which port to forward"）> BODYBRIDGE_PORT（本项目自己的变量）
+    > 8000（默认）。
+
+    坏值（非数字、超出 1-65535 合法端口范围）不会让服务拒启——跳过它，
+    试下一优先级，最终兜底 8000（铁律 3）。返回 (端口, 生效来源, 警告文案
+    或 None)；来源和警告都交给 __main__ 打印，让人一眼看出端口从哪来、
+    沿途有没有哪个变量的坏值被跳过了（铁律 4）。
+    """
+    warnings: list[str] = []
+    for name in ("PORT", "BODYBRIDGE_PORT"):
+        raw = os.environ.get(name, "").strip()
+        if not raw:
+            continue
+        try:
+            port = int(raw)
+            if not (1 <= port <= 65535):
+                raise ValueError("out of range")
+        except ValueError:
+            safe = raw.encode("ascii", "replace").decode("ascii")
+            warnings.append(
+                f"[bodybridge] warning: {name}='{safe}' is not a valid port "
+                "(must be an integer 1-65535); ignoring it."
+            )
+            continue
+        return port, name, ("\n".join(warnings) if warnings else None)
+    if warnings:
+        warnings.append("[bodybridge] falling back to the default port 8000.")
+    return 8000, "default", ("\n".join(warnings) if warnings else None)
+
+
+PORT, _PORT_SOURCE, _PORT_WARNING = _resolve_port()
 
 # 铁律 5：token 是鉴权必填项，没有安全默认值，走"明确必填提示"这条腿
 TOKEN = os.environ.get("BODYBRIDGE_TOKEN", "").strip()
@@ -655,6 +694,13 @@ if __name__ == "__main__":
 
     if _TOKEN_TTL_WARNING:  # 铁律 3/5：TTL 坏值不拒启，但要醒目提示
         print(_TOKEN_TTL_WARNING, file=sys.stderr)
+
+    if _PORT_WARNING:  # 铁律 3/5：端口坏值不拒启，跳过它、试下一优先级，但要提示
+        print(_PORT_WARNING, file=sys.stderr)
+
+    # 无条件打印：实际监听地址 + 端口来自哪个变量，排障第一眼就看得到（铁律 4）。
+    print(f"[bodybridge] listening on {HOST}:{PORT} (port source: {_PORT_SOURCE})",
+          file=sys.stderr)
 
     app = mcp.streamable_http_app()
 

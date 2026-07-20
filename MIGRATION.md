@@ -44,6 +44,40 @@ during the upgrade — reusing the same value is fine, since its only
 consumer now is the bridge itself. But see the limitation below before you
 ever rotate it.
 
+## `BODYBRIDGE_HOST`'s default changed: `127.0.0.1` -> `0.0.0.0`
+
+The bridge now listens on all network interfaces by default, not just
+localhost. This is a deliberate reversal from earlier versions.
+
+- **Why**: the bridge is meant to be reached from the outside (by claude.ai,
+  by your device) — defaulting to local-only access worked against that.
+  Auth is mandatory regardless of this setting (`BODYBRIDGE_TOKEN` /
+  `BODYBRIDGE_PASSWORD` both refuse to start if missing), so listening
+  everywhere by default exposes a locked door, not an open one.
+- **Impact on you**: if you were previously relying on the old
+  `127.0.0.1` default to keep the bridge local-only (for example, running
+  it behind your own reverse proxy and never setting `BODYBRIDGE_HOST`
+  yourself), it is now reachable from any interface after upgrading. Set
+  `BODYBRIDGE_HOST=127.0.0.1` explicitly if you want the old behavior back
+  — an explicit setting always overrides the default.
+- If you had already set `BODYBRIDGE_HOST` yourself (to anything), nothing
+  changes for you — this only affects deployments that relied on the
+  unset default.
+
+## Listening port now follows the platform's `PORT` variable first
+
+Priority: `PORT` (the variable most cloud platforms — Heroku, Railway,
+Render, Zeabur, etc. — inject to tell your app which port to listen on) >
+`BODYBRIDGE_PORT` (this project's own variable) > `8000` (default).
+
+Previously the bridge only ever read `BODYBRIDGE_PORT`, which could silently
+mismatch whatever port a cloud platform actually forwarded traffic to
+(the service would start successfully but be unreachable). You normally
+don't need to set either variable now — the platform's own `PORT` is picked
+up automatically. `BODYBRIDGE_PORT` still works if you need to pin a
+specific port yourself (e.g., local development, or a platform that doesn't
+inject `PORT`).
+
 ## Behavior change: how clients connect now
 
 1. Client discovers the bridge's OAuth metadata (`/.well-known/oauth-protected-resource/mcp`, `/.well-known/oauth-authorization-server`).

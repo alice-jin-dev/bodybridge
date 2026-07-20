@@ -102,6 +102,13 @@ On one-click deploy platforms, the domain is usually only assigned after
 deployment finishes — so the order is: deploy first, get the domain, then
 set `BODYBRIDGE_PUBLIC_URL` and restart.
 
+### Port and network binding
+
+The bridge listens on all interfaces (`0.0.0.0`) by default, and picks up
+most cloud platforms' injected `PORT` variable automatically (falling back
+to `BODYBRIDGE_PORT`, then `8000` if neither is set) — on most platforms you
+don't need to set `BODYBRIDGE_HOST` or a port variable yourself.
+
 ### ⚠️ Choosing a deployment region
 
 The bridge must be deployed somewhere that satisfies **both**:
