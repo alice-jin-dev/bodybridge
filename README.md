@@ -34,7 +34,7 @@ Four layers, each with one job:
 | Layer | Responsibility |
 |---|---|
 | **MCP Server** | Exposes tools over streamable-http; receives tool calls from the AI |
-| **Auth** | OAuth 2.1 authorization-code flow with PKCE and CIMD client identity; stateless JWT verification on every request. Secrets live in environment variables, never in code |
+| **Auth** | OAuth 2.1 authorization-code flow with PKCE; stateless JWT verification on every request. Client identity via Dynamic Client Registration (default) or CIMD, switchable. Secrets live in environment variables, never in code |
 | **Device Adapter Slot** | Standard interface: `send_command` / `get_status` / `list_capabilities`. Swap devices by implementing the same interface — the bridge itself stays untouched |
 | **Reflex** *(optional)* | Device-local instant reactions, independent of the AI |
 

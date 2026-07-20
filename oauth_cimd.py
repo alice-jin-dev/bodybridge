@@ -463,3 +463,198 @@ def verify_access_token(secret: str, token: str, *, audience: str,
         )
     except Exception:
         return None
+
+
+# --- 无状态动态客户端注册（DCR，RFC 7591）------------------------------------
+#
+# 这不是变通，是规范明确认可的模式：
+#   - RFC 7591 附录 A.5.2 标题即 "Stateless Client Registration"，与 A.5.1
+#     有状态注册并列，是官方承认的另一种合规实现方式。
+#   - OpenID Connect DCR 1.0 §8.2「Implementation Notes on Stateless Dynamic
+#     Client Registration」原文："In some deployments, it is advantageous to
+#     enable Clients to obtain the information necessary to interact with
+#     the Authorization Server ... without the requirement that state about
+#     the Client be stored at the Authorization Server ... One means of
+#     doing this is to encode necessary registration information about the
+#     Client into the client_id value returned."
+#   - IETF 草案 draft-bradley-oauth-stateless-client-id（作者是 RFC 7591 的
+#     同一批人）：client_id 对客户端本就不透明，无状态 client_id 的获取与
+#     使用方式与有状态完全相同。
+#
+# 走 DCR 而不是 CIMD 的原因：CIMD 要求桥主动出站访问客户端声明的 URL，受制于
+# 对方 WAF/我方出口 IP 信誉（实测 claude.ai 的 CIMD 文档被 Cloudflare JS 挑战
+# 拦下，403）；DCR 是客户端主动入站 POST 到我们，不需要任何出站请求，从根上
+# 避开这类问题。
+
+_MAX_REDIRECT_URIS = 10
+_MAX_CLIENT_ID_LENGTH = 4000
+_MAX_CLIENT_NAME_LENGTH = 200
+
+
+@dataclass
+class DCRValidationResult:
+    ok: bool
+    redirect_uris: list | None = None
+    client_name: str | None = None
+    error: str | None = None              # RFC 7591 §3.2.2 错误码
+    error_description: str | None = None
+
+
+def _is_acceptable_redirect_uri(uri) -> bool:
+    """MCP 授权规范原文："All redirect URIs MUST be either localhost or use
+    HTTPS"。https:// 一律放行；http:// 只放行 localhost/127.0.0.1 回环形式。
+    任何异常输入（非字符串、解析失败）一律归"不合规"，绝不上抛。"""
+    if not isinstance(uri, str) or not uri:
+        return False
+    try:
+        parts = urlsplit(uri)
+    except Exception:
+        return False
+    if parts.scheme == "https" and parts.hostname:
+        return True
+    if parts.scheme == "http" and parts.hostname in ("localhost", "127.0.0.1"):
+        return True
+    return False
+
+
+def validate_registration_request(body) -> DCRValidationResult:
+    """RFC 7591 §3.1 请求字段校验 + §3.2.2 错误码。
+
+    这是 OB 的真空白——它的 /oauth/register 对 body.get("redirect_uris", [])
+    不做任何检查（非空？不查。是不是列表？不查。每项是不是合法 URL？不查），
+    RFC 7591 §3.2.2 明明白白给了 invalid_redirect_uri / invalid_client_metadata
+    这两个专用错误码就是为了这种情况，这里把它们用足。
+
+    body 是完全不可信的外部 JSON（可能不是 dict、可能是深层嵌套的怪结构、
+    可能字段类型完全对不上）——整个函数用一层 try/except 兜底，任何异常都
+    归为校验失败，绝不上抛（铁律 3）；register 是给实现者用的端点、不是攻击
+    敏感面，error_description 可以说清楚哪里不合规（铁律 4）。
+    """
+    try:
+        if not isinstance(body, dict):
+            return DCRValidationResult(
+                False, error="invalid_client_metadata",
+                error_description="request body must be a JSON object",
+            )
+
+        redirect_uris = body.get("redirect_uris")
+        if not isinstance(redirect_uris, list) or not redirect_uris:
+            return DCRValidationResult(
+                False, error="invalid_redirect_uri",
+                error_description=(
+                    "redirect_uris is required and must be a non-empty array"
+                ),
+            )
+        if len(redirect_uris) > _MAX_REDIRECT_URIS:
+            return DCRValidationResult(
+                False, error="invalid_client_metadata",
+                error_description=(
+                    f"redirect_uris must not exceed {_MAX_REDIRECT_URIS} entries"
+                ),
+            )
+        for uri in redirect_uris:
+            if not _is_acceptable_redirect_uri(uri):
+                return DCRValidationResult(
+                    False, error="invalid_redirect_uri",
+                    error_description=(
+                        "each redirect_uri must be an https:// URL, or a "
+                        "http://localhost / http://127.0.0.1 loopback address"
+                    ),
+                )
+
+        client_name = body.get("client_name")
+        if not isinstance(client_name, str) or not client_name.strip():
+            client_name = "MCP Client"
+        else:
+            # 只是显示用，不是安全字段——超长静默截断，不因此拒绝注册。
+            client_name = client_name.strip()[:_MAX_CLIENT_NAME_LENGTH]
+
+        return DCRValidationResult(
+            True, redirect_uris=redirect_uris, client_name=client_name,
+        )
+    except Exception:
+        return DCRValidationResult(
+            False, error="invalid_client_metadata",
+            error_description="malformed registration request",
+        )
+
+
+def _derive_registration_key(secret: str) -> bytes:
+    """域分离：client_id 签名用的密钥，是从 BODYBRIDGE_TOKEN 派生出的专用
+    子密钥，不是直接复用签授权码/access token 的那把原始密钥。三种结构不同
+    的东西（授权码 claims / access token claims / client 注册 claims）不共用
+    同一把裸密钥——成本几乎为零，多一层防护，躲开"一个签名被误当另一种东西
+    验证通过"的理论风险。"""
+    return hmac.new(secret.encode("utf-8"), b"client-registration", hashlib.sha256).digest()
+
+
+def issue_client_id(secret: str, *, redirect_uris: list, client_name: str,
+                     now: float | None = None) -> tuple[str | None, int, str | None]:
+    """签一个自包含不透明 client_id。RFC 7591 对 client_id 格式没有任何要求
+    （不像 CIMD 强制 https:// URL），这给了自由：直接做成跟第 3 步签名授权码
+    同一套手法的 HMAC 签名不透明串——不是发明新机制，是复用已有模式。
+
+    不设过期：client_id 本身不是凭据，光有它拿不到任何东西——安全边界在
+    /oauth/authorize 的密码同意页，不需要像授权码/access token 那样限时。
+
+    返回 (client_id, issued_at, error)：
+      成功 -> (不透明串, 签发时刻, None)
+      编码后超出 _MAX_CLIENT_ID_LENGTH（redirect_uris 太多/太长撑爆的）
+        -> (None, 签发时刻, 人话原因)，调用方据此以 invalid_client_metadata 拒绝
+    """
+    now = time.time() if now is None else now
+    claims = {
+        "redirect_uris": redirect_uris,
+        "client_name": client_name,
+        "iat": int(now),
+    }
+    key = _derive_registration_key(secret)
+    payload_b64 = _b64url_encode(json.dumps(claims, separators=(",", ":")).encode("utf-8"))
+    sig_b64 = _b64url_encode(
+        hmac.new(key, payload_b64.encode("ascii"), hashlib.sha256).digest()
+    )
+    client_id = f"{payload_b64}.{sig_b64}"
+    if len(client_id) > _MAX_CLIENT_ID_LENGTH:
+        return None, int(now), (
+            "registration is too large (encoded client_id exceeds "
+            f"{_MAX_CLIENT_ID_LENGTH} characters -- too many or too long redirect_uris)"
+        )
+    return client_id, int(now), None
+
+
+def verify_client_id(secret: str, client_id: str) -> dict | None:
+    """本地验签解出 redirect_uris/client_name，零网络请求（对照 CIMD 路径，
+    这是走 DCR 的核心好处：不需要主动出站访问任何客户端声明的地址）。
+
+    任何失败（签名错、格式畸形、字段缺失或类型不对、任何异常——含空值/
+    超长串/二进制乱码/深层嵌套怪结构）一律返回 None，绝不上抛（铁律 3）。
+
+    这里没有"验不出来就跳过"的分支：调用方（/oauth/authorize）拿到 None
+    必须硬拒，不能像 OB 那样在"查不到"时放过 redirect_uri 校验——因为这个
+    函数根本不存在"查不到"这种中间状态，只有"验证通过、给你可信 claims"
+    或"验证失败、什么都不给"两种结果。
+    """
+    try:
+        payload_b64, sig_b64 = client_id.split(".", 1)
+    except Exception:
+        return None
+    try:
+        key = _derive_registration_key(secret)
+        expected_sig = hmac.new(key, payload_b64.encode("ascii"), hashlib.sha256).digest()
+        expected_sig_b64 = _b64url_encode(expected_sig)
+    except Exception:
+        return None
+    if not safe_compare(sig_b64, expected_sig_b64):
+        return None
+    try:
+        claims = json.loads(_b64url_decode(payload_b64).decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(claims, dict):
+        return None
+    redirect_uris = claims.get("redirect_uris")
+    if not isinstance(redirect_uris, list) or not redirect_uris:
+        return None
+    if not all(isinstance(u, str) for u in redirect_uris):
+        return None
+    return claims

@@ -65,13 +65,39 @@ TOKEN = os.environ.get("BODYBRIDGE_TOKEN", "").strip()
 # 比"桥能起但神秘地授权不了"诚实）。
 PASSWORD = os.environ.get("BODYBRIDGE_PASSWORD", "").strip()
 
-# 可选：CIMD 抓取的 host 白名单。默认空 = 通用防护（不限 host，但下面一系列
-# SSRF 防护照做）；设了就只放行这些 host，给想锁死的用户自由。
+# 可选：CIMD 抓取的 host 白名单。仅在 BODYBRIDGE_CLIENT_REGISTRATION=cimd 时
+# 生效——默认空 = 通用防护（不限 host，但下面一系列 SSRF 防护照做）；设了就
+# 只放行这些 host，给想锁死的用户自由。
 _raw_cimd_allowlist = os.environ.get("BODYBRIDGE_CIMD_ALLOWLIST", "").strip()
 CIMD_ALLOWLIST = (
     frozenset(h.strip() for h in _raw_cimd_allowlist.split(",") if h.strip())
     if _raw_cimd_allowlist else None
 )
+
+
+def _resolve_client_registration_mode() -> tuple[str, str | None]:
+    """客户端注册模式：dcr（默认）或 cimd。
+
+    默认 dcr：Claude 主动入站 POST 到我们，不需要我们主动出站访问 claude.ai，
+    从根上避开 CIMD 那次 Cloudflare JS 挑战（403，详见 MIGRATION.md）。cimd
+    仍完整保留、随时可切回（比如那个挑战以后被解除）。
+
+    没设是正常路径，静默默认 dcr（铁律 5）；设了但既不是 dcr 也不是 cimd，
+    才算用户操作出错，警告 + 回退 dcr（铁律 3：坏值不崩）。
+    """
+    raw = os.environ.get("BODYBRIDGE_CLIENT_REGISTRATION", "").strip().lower()
+    if not raw:
+        return "dcr", None
+    if raw in ("dcr", "cimd"):
+        return raw, None
+    safe = raw.encode("ascii", "replace").decode("ascii")
+    return "dcr", (
+        f"[bodybridge] warning: BODYBRIDGE_CLIENT_REGISTRATION='{safe}' is not "
+        "'dcr' or 'cimd'; falling back to 'dcr'."
+    )
+
+
+CLIENT_REGISTRATION, _CLIENT_REGISTRATION_WARNING = _resolve_client_registration_mode()
 
 
 def _resolve_token_ttl_days() -> tuple[float, str | None]:
@@ -270,19 +296,73 @@ async def oauth_protected_resource_root(request: Request) -> JSONResponse:
 
 @mcp.custom_route("/.well-known/oauth-authorization-server", methods=["GET"])
 async def oauth_authorization_server(request: Request) -> JSONResponse:
-    """RFC 8414 授权服务器元数据。"""
-    return JSONResponse({
+    """RFC 8414 授权服务器元数据。dcr/cimd 两种模式二选一广播，绝不同时出现
+    ——Anthropic 官方文档："Claude selects CIMD only when your authorization
+    server metadata advertises both client_id_metadata_document_supported:
+    true and none in token_endpoint_auth_methods_supported... If either is
+    missing, Claude falls back to DCR."：两个字段都出现的话 Claude 仍会优先
+    选 CIMD，开关就白设了。"""
+    metadata = {
         "issuer": PUBLIC_URL,
         "authorization_endpoint": f"{PUBLIC_URL}/oauth/authorize",
         "token_endpoint": f"{PUBLIC_URL}/oauth/token",
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code"],
         "code_challenge_methods_supported": ["S256"],
-        "token_endpoint_auth_methods_supported": ["none"],
-        "client_id_metadata_document_supported": True,
+        "token_endpoint_auth_methods_supported": ["none"],  # 两种模式都是公开客户端
         "scopes_supported": ["mcp"],
-        # 故意不声明 registration_endpoint：我们走 CIMD，不做 DCR。
-    })
+    }
+    if CLIENT_REGISTRATION == "dcr":
+        metadata["registration_endpoint"] = f"{PUBLIC_URL}/oauth/register"
+    else:
+        metadata["client_id_metadata_document_supported"] = True
+    return JSONResponse(metadata)
+
+
+# --- OAuth 动态客户端注册（第 2 层 · DCR，RFC 7591）--------------------------
+# 无状态：不落表，client_id 本身自包含签名（见 oauth_cimd.issue_client_id 的
+# 出处说明——RFC 7591 附录 A.5.2 / OIDC DCR 1.0 §8.2）。免鉴权（白名单里）；
+# cimd 模式下这个端点仍然存在、可访问，只是元数据没广播它，遵规范的客户端
+# 不会主动去调，不需要额外代码禁用。
+_DCR_HEADERS = {"Cache-Control": "no-store", "Pragma": "no-cache"}
+
+
+@mcp.custom_route("/oauth/register", methods=["POST"])
+async def oauth_register(request: Request) -> JSONResponse:
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+
+    result = oauth_cimd.validate_registration_request(body)
+    if not result.ok:
+        return JSONResponse(
+            {"error": result.error, "error_description": result.error_description},
+            status_code=400, headers=_DCR_HEADERS,
+        )
+
+    client_id, issued_at, size_error = oauth_cimd.issue_client_id(
+        TOKEN, redirect_uris=result.redirect_uris, client_name=result.client_name,
+    )
+    if client_id is None:
+        return JSONResponse(
+            {"error": "invalid_client_metadata", "error_description": size_error},
+            status_code=400, headers=_DCR_HEADERS,
+        )
+
+    return JSONResponse(
+        {
+            "client_id": client_id,
+            "client_id_issued_at": issued_at,
+            "redirect_uris": result.redirect_uris,
+            "client_name": result.client_name,
+            # 硬编码回，不看客户端说了什么——我们结构上只支持公开客户端。
+            "token_endpoint_auth_method": "none",
+            "grant_types": ["authorization_code"],
+            "response_types": ["code"],
+        },
+        status_code=201, headers=_DCR_HEADERS,
+    )
 
 
 # --- OAuth 授权端点（第 2 层 · CIMD 校验 + PKCE）----------------------------
@@ -364,8 +444,15 @@ def _redirect_with(redirect_uri: str, params: dict) -> RedirectResponse:
 def _validate_authorize_request(params: dict):
     """校验 /oauth/authorize 的参数。GET、POST 共用同一份逻辑——POST 的隐藏字段
     不被信任，原样重新走一遍这里，而不是假设 GET 已经验过了（这正是绕开 OB 那个
-    "client_info 为 None 时跳过 redirect_uri 校验"缺口的关键：我们没有本地注册表
-    可查，CIMD fetch 本身就是唯一的"注册检查"，不允许有跳过路径）。
+    "client_info 为 None 时跳过 redirect_uri 校验"缺口的关键：dcr 模式下没有
+    本地注册表可查，验签本身就是唯一的"注册检查"；cimd 模式下 CIMD fetch
+    本身就是唯一的"注册检查"——两种模式都不允许有跳过路径）。
+
+    客户端身份解析按 BODYBRIDGE_CLIENT_REGISTRATION 二选一：
+      dcr  -> 本地验签自签名 client_id（零网络请求），解出 redirect_uris
+      cimd -> 出站 fetch 客户端声明的 CIMD 文档（见 oauth_cimd.fetch_cimd_document）
+    两条分支殊途同归：要么拿到一份可信的 redirect_uris 列表，要么直接硬拒
+    ——没有中间态，所以 redirect_uri 精确匹配这一步天然无条件执行。
 
     返回 (stage, payload)：
       "trusted_error"  -> payload 是 HTMLResponse，直接返回，不重定向
@@ -373,26 +460,37 @@ def _validate_authorize_request(params: dict):
       "ok"              -> payload 是校验通过的字典
     """
     client_id = params.get("client_id", "")
-    if not client_id.startswith("https://"):
-        return "trusted_error", _authorize_error_page(
-            "client_id must be an https:// URL (a Client ID Metadata Document)."
-        )
-    if not urlsplit(client_id).path.strip("/"):
-        return "trusted_error", _authorize_error_page(
-            "client_id URL must contain a path component."
-        )
 
-    fetch = oauth_cimd.fetch_cimd_document(client_id, allowlist_hosts=CIMD_ALLOWLIST)
-    if not fetch.ok:
-        return "trusted_error", _authorize_error_page(
-            f"could not verify client identity: {fetch.error}"
-        )
+    if CLIENT_REGISTRATION == "dcr":
+        claims = oauth_cimd.verify_client_id(TOKEN, client_id)
+        if claims is None:
+            return "trusted_error", _authorize_error_page(
+                "client_id is not a valid or recognized client identifier."
+            )
+        redirect_uris = claims.get("redirect_uris", [])
+        client_name = claims.get("client_name") or client_id
+    else:
+        if not client_id.startswith("https://"):
+            return "trusted_error", _authorize_error_page(
+                "client_id must be an https:// URL (a Client ID Metadata Document)."
+            )
+        if not urlsplit(client_id).path.strip("/"):
+            return "trusted_error", _authorize_error_page(
+                "client_id URL must contain a path component."
+            )
+        fetch = oauth_cimd.fetch_cimd_document(client_id, allowlist_hosts=CIMD_ALLOWLIST)
+        if not fetch.ok:
+            return "trusted_error", _authorize_error_page(
+                f"could not verify client identity: {fetch.error}"
+            )
+        redirect_uris = fetch.document.get("redirect_uris", [])
+        client_name = fetch.document.get("client_name") or client_id
 
     redirect_uri = params.get("redirect_uri", "")
-    if redirect_uri not in fetch.document.get("redirect_uris", []):
+    if redirect_uri not in redirect_uris:
         return "trusted_error", _authorize_error_page(
-            "redirect_uri does not match any redirect_uris in the client's "
-            "metadata document."
+            "redirect_uri does not match any redirect_uris registered for "
+            "this client."
         )
 
     # --- redirect_uri 从此可信，以下错误可以带 error= 重定向回去 ---
@@ -417,7 +515,7 @@ def _validate_authorize_request(params: dict):
 
     return "ok", {
         "client_id": client_id,
-        "client_name": fetch.document.get("client_name", client_id),
+        "client_name": client_name,
         "redirect_uri": redirect_uri,
         "state": params.get("state", ""),
         "code_challenge": code_challenge,
@@ -628,6 +726,7 @@ _PUBLIC_PATH_PREFIXES = (
     "/.well-known/oauth-authorization-server",
     "/oauth/authorize",
     "/oauth/token",
+    "/oauth/register",
 )
 
 
@@ -702,8 +801,13 @@ if __name__ == "__main__":
     if _PORT_WARNING:  # 铁律 3/5：端口坏值不拒启，跳过它、试下一优先级，但要提示
         print(_PORT_WARNING, file=sys.stderr)
 
+    if _CLIENT_REGISTRATION_WARNING:  # 铁律 3/5：模式坏值不拒启，回退 dcr，但要提示
+        print(_CLIENT_REGISTRATION_WARNING, file=sys.stderr)
+
     # 无条件打印：实际监听地址 + 端口来自哪个变量，排障第一眼就看得到（铁律 4）。
     print(f"[bodybridge] listening on {HOST}:{PORT} (port source: {_PORT_SOURCE})",
+          file=sys.stderr)
+    print(f"[bodybridge] client registration mode: {CLIENT_REGISTRATION}",
           file=sys.stderr)
 
     app = mcp.streamable_http_app()

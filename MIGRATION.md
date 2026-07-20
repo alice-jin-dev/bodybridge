@@ -2,8 +2,11 @@
 
 This covers the change from bodybridge's original V1 auth model (a single
 shared `BODYBRIDGE_TOKEN` that clients presented directly) to OAuth 2.1
-authorization-code + PKCE + CIMD, with short-lived JWT access tokens. If
-you deployed bodybridge before this change, read this before you upgrade.
+authorization-code + PKCE, with short-lived JWT access tokens. Client
+identity is established via Dynamic Client Registration (DCR, the default)
+or Client ID Metadata Documents (CIMD, switchable) — see "Client
+registration: DCR vs CIMD" below. If you deployed bodybridge before this
+change, read this before you upgrade.
 
 ## What changed, in one sentence
 
@@ -18,9 +21,43 @@ They must complete an OAuth authorization flow (`/oauth/authorize` then
 | `BODYBRIDGE_PASSWORD` | **Yes** — the bridge refuses to start without it | none | Gates the `/oauth/authorize` consent page. This is the password *you* type when a client asks to connect. |
 | `BODYBRIDGE_PUBLIC_URL` | Practically yes, for any real (non-local) deployment | falls back to `http://<host>:<port>` with a startup warning | The bridge's public HTTPS base URL. Used in OAuth discovery metadata and must match the URL you type into Claude exactly. |
 | `BODYBRIDGE_TOKEN_TTL_DAYS` | No | `7` | How many days an issued access token stays valid. There's no refresh token in V1 — once it expires, the client re-authorizes. |
-| `BODYBRIDGE_CIMD_ALLOWLIST` | No | unset (no restriction) | Comma-separated host allowlist for CIMD client discovery, if you want to lock the bridge down to specific known clients. |
+| `BODYBRIDGE_CLIENT_REGISTRATION` | No | `dcr` | `dcr` or `cimd` — how the bridge establishes client identity. See "Client registration: DCR vs CIMD" below. |
+| `BODYBRIDGE_CIMD_ALLOWLIST` | No | unset (no restriction) | Comma-separated host allowlist for CIMD client discovery. Only relevant when `BODYBRIDGE_CLIENT_REGISTRATION=cimd`. |
 
 See `.env.example` for the exact format of each.
+
+## Client registration: DCR (default) vs CIMD
+
+The bridge needs to learn who an MCP client is before showing the
+`/oauth/authorize` consent page. Two mechanisms are supported, switchable
+via `BODYBRIDGE_CLIENT_REGISTRATION`:
+
+- **`dcr` (default)** — Dynamic Client Registration ([RFC 7591](https://datatracker.ietf.org/doc/html/rfc7591)). The client `POST`s its `redirect_uris` to `/oauth/register` and gets back a `client_id`. No outbound request from the bridge is ever made — this is why it's the default.
+- **`cimd`** — Client ID Metadata Documents. The client's `client_id` is an `https://` URL that the bridge fetches to discover `redirect_uris`. This is the spec's preferred long-term mechanism, but it requires the bridge to reach out to that URL — in practice, fetching claude.ai's CIMD document (`https://claude.ai/oauth/mcp-oauth-client-metadata`) hits a Cloudflare JS challenge and returns `403`. No `User-Agent` or header change gets past this — it needs a real browser JS engine, which the bridge deliberately does not implement (no browser impersonation). That's why `dcr` is the default for now.
+
+Both modes are fully implemented and either can be selected at any time
+without any other code changes — e.g., if the Cloudflare-challenge issue
+above gets resolved on Anthropic's side later, switching back to `cimd` is
+just an environment variable change.
+
+bodybridge's DCR implementation is **stateless**: no client registry is
+stored anywhere. The `client_id` returned by `/oauth/register` is a
+self-signed, opaque token that encodes the registered `redirect_uris` and
+`client_name` directly — verified locally (no lookup, no network request)
+when a client later calls `/oauth/authorize`. This is an officially
+recognized pattern, not a workaround: RFC 7591 Appendix A.5.2 is titled
+"Stateless Client Registration", and OpenID Connect DCR 1.0 §8.2 describes
+exactly this approach ("encode necessary registration information about
+the Client into the `client_id` value returned").
+
+**Honest limitation**: because there's no client registry, there is no way
+to revoke a single client's registration. The only way to invalidate a
+`client_id` is to rotate `BODYBRIDGE_TOKEN` — which, same as with access
+tokens (see below), invalidates *every* previously-issued `client_id`,
+authorization code, and access token at once, not just the one you meant
+to revoke. This is a low-stakes version of that same tradeoff though: a
+`client_id` alone grants no access to anything — the `/oauth/authorize`
+password gate is still the real security boundary.
 
 ## `BODYBRIDGE_TOKEN`'s meaning changed — the name did not
 
@@ -31,10 +68,11 @@ completely different now**:
 
 - **Before**: a static shared secret. Clients presented it directly, byte
   for byte, as the Bearer token on every request.
-- **Now**: the server's own private JWT signing key. It is used only on
-  the server side — to sign tokens at `/oauth/token` and verify them in
-  the auth middleware. It is never sent to, seen by, or used by any
-  client. If you have any script or config anywhere that sends
+- **Now**: the server's own private signing secret. It is used only on
+  the server side — to sign authorization codes, access tokens, and (in
+  `dcr` mode, via a derived sub-key) client identities, and to verify all
+  of those. It is never sent to, seen by, or used by any client. If you
+  have any script or config anywhere that sends
   `Authorization: Bearer $BODYBRIDGE_TOKEN` directly to `/mcp`, it will
   now get a `401` — that's expected, not a bug. Switch it to go through
   the OAuth flow instead.
@@ -81,11 +119,12 @@ inject `PORT`).
 ## Behavior change: how clients connect now
 
 1. Client discovers the bridge's OAuth metadata (`/.well-known/oauth-protected-resource/mcp`, `/.well-known/oauth-authorization-server`).
-2. Client sends the user (you) to `/oauth/authorize` with a CIMD `client_id`, `redirect_uri`, and a PKCE `code_challenge`.
-3. You enter `BODYBRIDGE_PASSWORD` on the consent page.
-4. The bridge redirects back with a short-lived authorization code.
-5. The client exchanges that code (plus the PKCE `code_verifier`) at `/oauth/token` for a JWT access token, valid for `BODYBRIDGE_TOKEN_TTL_DAYS` days.
-6. The client presents that JWT as the Bearer token on `/mcp` requests until it expires, then repeats from step 2.
+2. (`dcr` mode, default) Client `POST`s to `/oauth/register` with its `redirect_uris` and gets back a `client_id`. (`cimd` mode) Client already has a `client_id` — an `https://` URL the bridge will fetch.
+3. Client sends the user (you) to `/oauth/authorize` with that `client_id`, `redirect_uri`, and a PKCE `code_challenge`.
+4. You enter `BODYBRIDGE_PASSWORD` on the consent page.
+5. The bridge redirects back with a short-lived authorization code.
+6. The client exchanges that code (plus the PKCE `code_verifier`) at `/oauth/token` for a JWT access token, valid for `BODYBRIDGE_TOKEN_TTL_DAYS` days.
+7. The client presents that JWT as the Bearer token on `/mcp` requests until it expires, then repeats from step 3 (registration in step 2 typically isn't needed again — the same `client_id` keeps working).
 
 ## Honest limitation: rotating `BODYBRIDGE_TOKEN` invalidates every issued token, all at once
 
@@ -115,11 +154,11 @@ later — it isn't in scope for V1.
 
 ## How to verify it actually works
 
-`scripts/oauth_flow_check.py` drives the full chain — authorize, password
-check, code exchange, JWT issuance, and middleware verification — against
-the real server code, without needing a real deployment or a real external
-OAuth client. Run it any time you want to confirm the OAuth plumbing still
-works:
+`scripts/oauth_flow_check.py` drives the full chain — registration,
+authorize, password check, code exchange, JWT issuance, and middleware
+verification — against the real server code, without needing a real
+deployment or a real external OAuth client. Run it any time you want to
+confirm the OAuth plumbing still works:
 
 ```
 python scripts/oauth_flow_check.py

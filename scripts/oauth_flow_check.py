@@ -1,5 +1,6 @@
-"""Manual regression check for the full OAuth chain: /oauth/authorize ->
-/oauth/token -> a Bearer JWT that the auth middleware accepts on /mcp.
+"""Manual regression check for the full OAuth chain: /oauth/register ->
+/oauth/authorize -> /oauth/token -> a Bearer JWT that the auth middleware
+accepts on /mcp.
 
 Run it any time after touching server.py or oauth_cimd.py:
 
@@ -10,18 +11,19 @@ What this does and does not cover
 This drives the REAL server.py route functions and the REAL
 BearerAuthMiddleware directly (constructed ASGI Request/scope objects, no
 network socket involved -- so it never binds a port and can't collide with
-a real bridge you might have running). Only ONE thing is stubbed: the
-outbound CIMD document fetch (oauth_cimd.fetch_cimd_document), replaced with
-a canned, clearly-labeled test fixture instead of a real HTTPS client_id.
+a real bridge you might have running).
 
-Why: the bridge's own SSRF guard (see oauth_cimd.py) correctly refuses to
-fetch documents from loopback/private addresses, so there is no way to
-self-host a real CIMD document on localhost for this script to hit -- that
-refusal is a feature, not a bug, and is already exhaustively covered by real
-network tests during development (see the "第 3 步" SSRF verification).
-This script's job is different: confirm that OUR OWN plumbing (password
-gate, PKCE, code redemption, JWT issuance, JWT verification) still works
-end to end, not to re-verify SSRF protection.
+Default client registration mode is DCR (BODYBRIDGE_CLIENT_REGISTRATION
+unset -> "dcr"), so this script registers a real client via the real
+/oauth/register route and gets back a real, self-signed client_id -- no
+network fetch, no stubbing needed at all for that step. This is different
+from before this project switched to DCR: the CIMD path used to require
+stubbing oauth_cimd.fetch_cimd_document, since the bridge's own SSRF guard
+correctly refuses to fetch documents from loopback/private addresses (no
+way to self-host a real CIMD document on localhost). That CIMD path is
+still fully present and switchable via BODYBRIDGE_CLIENT_REGISTRATION=cimd,
+but this script exercises the default (dcr) path since that's what actually
+ships to users now.
 
 Exit code is 0 if every check passes, 1 otherwise. Output is pure ASCII.
 """
@@ -42,10 +44,10 @@ sys.stdout.reconfigure(encoding="utf-8")
 os.environ["BODYBRIDGE_TOKEN"] = "oauth-flow-check-" + os.urandom(16).hex()
 os.environ["BODYBRIDGE_PASSWORD"] = "oauth-flow-check-" + os.urandom(16).hex()
 os.environ.pop("BODYBRIDGE_PUBLIC_URL", None)
+os.environ.pop("BODYBRIDGE_CLIENT_REGISTRATION", None)  # use the default: dcr
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import oauth_cimd  # noqa: E402
 import server  # noqa: E402
 from starlette.requests import Request  # noqa: E402
 
@@ -80,11 +82,20 @@ def make_get(path: str, query: dict) -> Request:
 
 def make_post_form(path: str, form: dict) -> Request:
     body = urlencode(form).encode()
+    return _make_post_raw(path, body, b"application/x-www-form-urlencoded")
+
+
+def make_post_json(path: str, obj: dict) -> Request:
+    body = json.dumps(obj).encode()
+    return _make_post_raw(path, body, b"application/json")
+
+
+def _make_post_raw(path: str, body: bytes, content_type: bytes) -> Request:
     scope = {
         "type": "http", "method": "POST", "path": path,
         "query_string": b"",
         "headers": [
-            (b"content-type", b"application/x-www-form-urlencoded"),
+            (b"content-type", content_type),
             (b"content-length", str(len(body)).encode()),
         ],
         "client": ("127.0.0.1", 12345),
@@ -129,18 +140,21 @@ async def drive_middleware(auth_header_value: str | None):
     return downstream_called["yes"], result["status"], result["headers"]
 
 
-# --- Step 1: obtain a real code via the real /oauth/authorize route --------
+check("default client registration mode is dcr", server.CLIENT_REGISTRATION == "dcr",
+      server.CLIENT_REGISTRATION)
 
-CLIENT_ID = "https://oauth-flow-check.example/client-metadata.json"  # TEST FIXTURE, not a real URL
-REDIRECT_URI = "https://oauth-flow-check.example/callback"           # TEST FIXTURE
-FAKE_CIMD_DOC = oauth_cimd.CIMDResult(
-    ok=True,
-    document={
-        "client_id": CLIENT_ID, "client_name": "oauth_flow_check test client",
-        "redirect_uris": [REDIRECT_URI],
-    },
-)
-oauth_cimd.fetch_cimd_document = lambda *a, **k: FAKE_CIMD_DOC  # stub, see module docstring
+# --- Step 1: register a client via the real /oauth/register route ----------
+
+REDIRECT_URI = "https://oauth-flow-check.example/callback"  # TEST FIXTURE, not a real URL
+
+resp = run(server.oauth_register(make_post_json("/oauth/register", {
+    "redirect_uris": [REDIRECT_URI], "client_name": "oauth_flow_check test client",
+})))
+check("POST /oauth/register -> 201", resp.status_code == 201, f"got {resp.status_code}: {resp.body}")
+CLIENT_ID = json.loads(resp.body).get("client_id") if resp.status_code == 201 else None
+check("registration returned a client_id", bool(CLIENT_ID))
+
+# --- Step 2: obtain a real code via the real /oauth/authorize route --------
 
 verifier = base64.urlsafe_b64encode(os.urandom(48)).rstrip(b"=").decode("ascii")
 challenge = b64url(hashlib.sha256(verifier.encode("ascii")).digest())
@@ -163,7 +177,7 @@ m = re.search(r"[?&]code=([^&]+)", resp.headers.get("location", ""))
 check("authorization code present in the redirect", m is not None)
 code = unquote(m.group(1)) if m else None
 
-# --- Step 2: exchange the code for a JWT via the real /oauth/token route ---
+# --- Step 3: exchange the code for a JWT via the real /oauth/token route ---
 
 resp = run(server.oauth_token(make_post_form("/oauth/token", {
     "grant_type": "authorization_code", "code": code, "client_id": CLIENT_ID,
@@ -175,7 +189,7 @@ token_body = json.loads(resp.body) if resp.status_code == 200 else {}
 access_token = token_body.get("access_token")
 check("response contains access_token", bool(access_token))
 
-# --- Step 3: use the JWT against the real BearerAuthMiddleware on /mcp -----
+# --- Step 4: use the JWT against the real BearerAuthMiddleware on /mcp -----
 
 called, status, headers = run(drive_middleware(f"Bearer {access_token}"))
 check("valid JWT -> middleware lets the request through to /mcp", called,
@@ -191,6 +205,13 @@ check("no Authorization header -> WWW-Authenticate present",
 called, status, _ = run(drive_middleware(f"Bearer {server.TOKEN}"))
 check("RETIRED MODEL: raw BODYBRIDGE_TOKEN as bearer is now rejected",
       (not called) and status == 401, f"downstream called={called}, status={status}")
+
+resp = run(server.oauth_authorize(make_get("/oauth/authorize", {
+    **authorize_params, "client_id": "totally-forged-client-id",
+})))
+check("forged client_id -> hard rejected (no redirect)",
+      "location" not in {k.lower() for k in resp.headers.keys()} and resp.status_code == 400,
+      f"status={resp.status_code}")
 
 print(f"\n=== {len(FAILURES) == 0 and 'ALL CHECKS PASSED' or f'{len(FAILURES)} FAILURE(S)'} ===")
 for f in FAILURES:
