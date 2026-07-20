@@ -106,7 +106,11 @@ def _resolve_public_url() -> tuple[str, str | None]:
     ASCII 警告交回给 __main__ 打印（本地控制台可能是 GBK，输出必须纯 ASCII）。
     """
     raw = os.environ.get("BODYBRIDGE_PUBLIC_URL", "").strip()
-    local = f"http://{HOST}:{PORT}"
+    # 0.0.0.0 是"监听所有网卡"的意思，不是可访问地址——本地回退时换成
+    # 127.0.0.1，不然拼出来的 resource/issuer 连本地调试都访问不了。
+    # HOST 显式设成别的值（包括别的非本地地址）时照原样拼，不做特殊处理。
+    local_host = "127.0.0.1" if HOST == "0.0.0.0" else HOST
+    local = f"http://{local_host}:{PORT}"
     if not raw:
         return local, (
             "[bodybridge] warning: BODYBRIDGE_PUBLIC_URL is not set; "
