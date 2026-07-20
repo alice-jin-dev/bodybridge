@@ -545,13 +545,19 @@ async def oauth_token(request: Request) -> JSONResponse:
 # 放行，完全不碰响应流（避免 BaseHTTPMiddleware 掐断 streamable-http 的 SSE 长流）。
 # 因为 stateless_http，每次 MCP 调用都是独立 HTTP 请求，所以这里天然做到"每个请求
 # 都验"，而不是只在握手时验一次。
+#
+# 第 5 步（OAuth 改造收尾）：这里不再是"比对固定 BODYBRIDGE_TOKEN 字符串"，
+# 而是验第 4 步签发的 JWT——签名 + exp + aud + iss 全部显式校验（见
+# oauth_cimd.verify_access_token）。BODYBRIDGE_TOKEN 的角色也变了：不再是
+# 客户端直接出示的钥匙，而是服务器自己的 JWT 签名密钥，只在这里和签发处使用，
+# 永不出现在客户端手里（迁移细节见 MIGRATION.md）。
 
 
-def _token_matches(presented: str, expected: str) -> bool:
-    """常量时间比对，防时序攻击、防全角字符崩服务。实际实现是共享的
-    oauth_cimd.safe_compare——token 比对、/oauth/authorize 密码比对、授权码
-    签名比对，全走这一个安全模式，只维护一处（铁律 3 血泪的教训）。"""
-    return oauth_cimd.safe_compare(presented, expected)
+def _verify_bearer_token(token: str) -> bool:
+    """校验 Authorization 头里的 Bearer token 是否是我们签发的有效 JWT。"""
+    return oauth_cimd.verify_access_token(
+        TOKEN, token, audience=f"{PUBLIC_URL}/mcp", issuer=PUBLIC_URL,
+    ) is not None
 
 
 def _password_matches(presented: str) -> bool:
@@ -585,10 +591,12 @@ _PUBLIC_PATH_PREFIXES = (
 class BearerAuthMiddleware:
     def __init__(self, app, token: str):
         self.app = app
-        self.token = token
+        self.token = token  # JWT 签名密钥（即 BODYBRIDGE_TOKEN），不再是共享明文钥匙
 
     def _reason_to_reject(self, auth_bytes) -> str | None:
-        """返回一句人话说明为何拒绝；返回 None 表示放行。防御性处理各种坏输入。"""
+        """返回一句人话说明为何拒绝；返回 None 表示放行。防御性处理各种坏输入
+        ——空值、超长串、全角字符、二进制乱码、格式畸形的 JWT，一律友好拒绝，
+        绝不 500（铁律 3）。"""
         if not auth_bytes:
             return "缺少 Authorization 头，请带上 'Bearer <你的 token>'"
         try:
@@ -598,8 +606,10 @@ class BearerAuthMiddleware:
         parts = auth.split(" ", 1)
         if len(parts) != 2 or parts[0].lower() != "bearer":
             return "Authorization 头格式应为 'Bearer <token>'"
-        if not _token_matches(parts[1].strip(), self.token):
-            return "token 无效，请确认与服务端 BODYBRIDGE_TOKEN 一致"
+        if not _verify_bearer_token(parts[1].strip()):
+            # 签名错/已过期/aud 不符/iss 不符/格式畸形——统一这一句，不细分
+            # 具体原因（防信息泄露，延续第 4 步 /oauth/token 的同一策略）。
+            return "token 无效或已过期，请重新完成 OAuth 授权（从 /oauth/authorize 开始）以获取新 token"
         return None
 
     async def __call__(self, scope, receive, send):

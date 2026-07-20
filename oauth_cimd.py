@@ -1,4 +1,4 @@
-"""CIMD 客户端发现 + SSRF 安全抓取 + 无状态签名授权码 + PKCE 校验 + JWT 签发。
+"""CIMD 客户端发现 + SSRF 安全抓取 + 无状态签名授权码 + PKCE 校验 + JWT 签发/验证。
 
 这个模块只依赖标准库、httpcore 和 PyJWT（都是 mcp[cli] 的直接依赖，见
 uv.lock 里 mcp 包自己声明 pyjwt[crypto]，无新增依赖）。不依赖 server.py，
@@ -396,3 +396,28 @@ def issue_access_token(secret: str, *, issuer: str, audience: str, subject: str,
     }
     token = jwt.encode(claims, secret, algorithm="HS256")
     return token, int(ttl_seconds)
+
+
+def verify_access_token(secret: str, token: str, *, audience: str,
+                         issuer: str) -> dict | None:
+    """验一个 issue_access_token 签发的 JWT：签名 + exp（PyJWT 默认校验，没被
+    关掉）+ aud + iss，全部显式声明，绝不读 token 自称的 alg 去决定校验方式——
+    algorithms=["HS256"] 是唯一允许的算法，不传这个参数 PyJWT 本身就拒绝执行
+    （见 issue_access_token 的说明），从设计上堵死"偷懒读 alg 字段"这条路。
+
+    aud 必须精确等于我们自己的资源 URI（MCP 授权规范："MCP servers MUST
+    validate that access tokens were issued specifically for them as the
+    intended audience" 且 "MUST NOT accept or transit any other tokens"）；
+    iss 必须等于 PUBLIC_URL，跟第 1 步 AS 元数据的 issuer 一致。
+
+    任何失败（签名错、过期、aud 不符、iss 不符、格式畸形、任何异常——包括
+    调用方喂进来空值/超长串/全角字符/二进制乱码/畸形 JWT）一律返回 None，
+    不区分具体原因（调用方据此统一报"token 无效"，不泄露细节是哪一种失败），
+    也绝不上抛（铁律 3）。
+    """
+    try:
+        return jwt.decode(
+            token, secret, algorithms=["HS256"], audience=audience, issuer=issuer,
+        )
+    except Exception:
+        return None
