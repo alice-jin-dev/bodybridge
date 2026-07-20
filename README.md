@@ -54,7 +54,7 @@ honestly instead of guessing. That refusal *is* the safety mechanism.
 |---|---|---|
 | What it does | Motion control (turn, light up, move…) | Everything in V1 + streaming interaction (voice first) |
 | Interaction | Request-response | Request-response + streaming |
-| Required config | **1 item** (token) | Several (token + storage + voice service credentials) |
+| Required config | **2 items** (token + password), +1 for public deployment (public URL) | Several (token + storage + voice service credentials) |
 | External dependencies | **None** | Likely additional services |
 
 **Choose V1 if** you just want the AI to control device actions — minimal, readable, stable, zero dependencies.
@@ -72,6 +72,10 @@ honestly instead of guessing. That refusal *is* the safety mechanism.
 ---
 
 ## Deployment
+
+> **Upgrading an existing deployment?** Authentication changed from a static
+> token to OAuth 2.1 in this version. See [MIGRATION.md](MIGRATION.md) for
+> what's different and what you need to do.
 
 ### ⚠️ Choosing a deployment region
 
