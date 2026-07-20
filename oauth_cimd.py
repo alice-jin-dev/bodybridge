@@ -1,7 +1,8 @@
-"""CIMD 客户端发现 + SSRF 安全抓取 + 无状态签名授权码。
+"""CIMD 客户端发现 + SSRF 安全抓取 + 无状态签名授权码 + PKCE 校验 + JWT 签发。
 
-这个模块只依赖标准库和 httpcore（mcp SDK 的传递依赖，无新增依赖）。
-不依赖 server.py，方便独立单测（尤其是签名码的一次性消费逻辑）。
+这个模块只依赖标准库、httpcore 和 PyJWT（都是 mcp[cli] 的直接依赖，见
+uv.lock 里 mcp 包自己声明 pyjwt[crypto]，无新增依赖）。不依赖 server.py，
+方便独立单测（尤其是签名码的一次性消费逻辑、PKCE 比对、JWT claims）。
 
 SSRF 防护的核心手法："解析一次、校验那个 IP、就连那个已校验的 IP"——
 不是校验域名字符串、也不是校验后重新解析再连接（后者正是 DNS rebinding
@@ -24,6 +25,7 @@ from re import compile as _re_compile
 from urllib.parse import urlsplit
 
 import httpcore
+import jwt
 
 # CIMD draft §6.6 建议上限 5KB；这里放宽到 16KB 留余量，但仍是硬上限。
 _MAX_RESPONSE_BYTES = 16 * 1024
@@ -341,3 +343,56 @@ def redeem_authorization_code(secret: str, code: str, used_jtis: dict,
 
     used_jtis[jti] = exp
     return claims
+
+
+# --- PKCE 校验 + JWT 签发（/oauth/token 用）---------------------------------
+
+
+def verify_pkce_challenge(code_verifier: str, code_challenge: str) -> bool:
+    """RFC 7636 §4.6：用 code_verifier 算出 S256 challenge
+    （BASE64URL-ENCODE(SHA256(ASCII(code_verifier)))，见 §4.2），跟存的
+    code_challenge 比对。
+
+    常量时间比较：这里比的是两个哈希摘要，不是裸密码——SHA256 的雪崩效应决定
+    "逐字节猜哈希输出"这类时序攻击在实践中不可行，风险量级跟直接比密码不是
+    一回事。但用 safe_compare 的代价是零，且能跟项目里"这一类比较统一走一个
+    安全函数"的做法保持一致，所以照样用它，不是因为这里有实际可利用的时序漏洞。
+
+    任何异常（含 code_verifier 含非 ASCII 字符导致 encode 失败）一律归"不匹配"，
+    绝不上抛——跟 safe_compare 同一套"防崩"哲学，调用方不需要在这之前单独做
+    格式校验，喂什么进来都不会崩，格式不对自然计算不出匹配的结果。
+    """
+    try:
+        digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
+        computed = _b64url_encode(digest)
+    except Exception:
+        return False
+    return safe_compare(computed, code_challenge)
+
+
+def issue_access_token(secret: str, *, issuer: str, audience: str, subject: str,
+                        ttl_seconds: float, now: float | None = None) -> tuple[str, int]:
+    """签发无状态 JWT access token（HS256）。返回 (token, expires_in 整数秒)。
+
+    算法选 HS256：签发（这里）和验证（第 5 步的 MCP 中间件）是同一个进程，
+    非对称签名的价值在于"验证方不必持有签名密钥"，这里用不上，只会平添密钥对
+    生成/轮换/存储的复杂度（违背桥身求薄）。
+
+    防 alg 混淆：这里签发时显式指定 algorithm="HS256"，不读取任何外部输入去
+    决定算法。第 5 步验证时必须同样显式传 algorithms=["HS256"]（不是从 token
+    自己的头部读 alg 来决定用什么密钥/算法校验）——这不是"建议"，是 PyJWT 2.x
+    的结构性强制：不传 algorithms 参数，jwt.decode() 直接抛 DecodeError，库
+    从设计上不给"偷懒读 alg 字段"的选项。这里只负责稳定地只用这一种算法签。
+    """
+    now = time.time() if now is None else now
+    exp = now + ttl_seconds
+    claims = {
+        "iss": issuer,
+        "aud": audience,
+        "sub": subject,
+        "iat": int(now),
+        "exp": int(exp),
+        "jti": secrets.token_urlsafe(16),
+    }
+    token = jwt.encode(claims, secret, algorithm="HS256")
+    return token, int(ttl_seconds)

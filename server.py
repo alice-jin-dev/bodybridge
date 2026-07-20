@@ -35,6 +35,30 @@ CIMD_ALLOWLIST = (
 )
 
 
+def _resolve_token_ttl_days() -> tuple[float, str | None]:
+    """access token 有效期，天数。这是控制/配置层的自由项——不是必填项：
+    没设是正常路径，静默用默认值 7 天，不警告（铁律 5：合理默认值）；
+    设了但是坏值（非数字/负数/零）才算用户明确操作出错，警告 + 回退
+    （铁律 3：坏值绝不崩服务）。"""
+    raw = os.environ.get("BODYBRIDGE_TOKEN_TTL_DAYS", "").strip()
+    if not raw:
+        return 7.0, None
+    try:
+        ttl = float(raw)
+        if ttl <= 0:
+            raise ValueError("must be positive")
+    except ValueError:
+        safe = raw.encode("ascii", "replace").decode("ascii")
+        return 7.0, (
+            f"[bodybridge] warning: BODYBRIDGE_TOKEN_TTL_DAYS='{safe}' is invalid "
+            "(must be a positive number); falling back to 7 days."
+        )
+    return ttl, None
+
+
+TOKEN_TTL_DAYS, _TOKEN_TTL_WARNING = _resolve_token_ttl_days()
+
+
 def _resolve_public_url() -> tuple[str, str | None]:
     """解析桥的公网基址，供 OAuth 元数据（RFC 9728/8414）用。
     返回 (基址_去尾斜杠, 警告文案_或_None)。
@@ -416,6 +440,106 @@ async def oauth_authorize(request: Request):
     })
 
 
+# --- OAuth token 端点（第 2 层 · PKCE 核对 + JWT 签发）----------------------
+# 参数校验、错误码全按 RFC 6749 §5.2（token 端点错误响应固定 HTTP 400 +
+# {"error", "error_description"}）+ RFC 7636（PKCE 失败专用 invalid_grant）+
+# RFC 8707（resource 不匹配专用 invalid_target，不是通用 invalid_grant）。
+#
+# 授权码类失败（签名错/过期/已用过/client_id 不符/redirect_uri 不符/PKCE 失败）
+# 统一折叠成同一句 invalid_grant + 同一句 error_description，不区分具体原因——
+# 这些是私密值，细分等于给试探者情报。resource 不匹配则相反，把期望值和收到值
+# 并排列出来——resource 本来就公开在元数据文档里，且几乎总是配置错误，说清楚
+# 才好排查，两种策略不同是有意的。
+
+_CODE_INVALID_ERROR = (
+    "invalid_grant",
+    "the authorization code is invalid, expired, already used, or does not "
+    "match this request.",
+)
+
+
+def _token_error(error: str, description: str, status: int = 400) -> JSONResponse:
+    return JSONResponse(
+        {"error": error, "error_description": description},
+        status_code=status,
+        headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+    )
+
+
+@mcp.custom_route("/oauth/token", methods=["POST"])
+async def oauth_token(request: Request) -> JSONResponse:
+    # Anthropic 官方文档点名要求：/token 必须真支持
+    # application/x-www-form-urlencoded（不能只支持 JSON）；JSON 顺手兼容。
+    content_type = request.headers.get("content-type", "")
+    try:
+        if "json" in content_type:
+            raw_body = await request.json()
+            body = raw_body if isinstance(raw_body, dict) else {}
+        else:
+            form = await request.form()
+            body = {k: str(v) for k, v in form.items()}
+    except Exception:
+        return _token_error("invalid_request", "could not parse the request body.")
+
+    if body.get("grant_type") != "authorization_code":
+        return _token_error(
+            "unsupported_grant_type",
+            "only grant_type=authorization_code is supported.",
+        )
+
+    code = str(body.get("code") or "")
+    client_id = str(body.get("client_id") or "")
+    if not code or not client_id:
+        return _token_error(
+            "invalid_request", "code and client_id are required parameters."
+        )
+    redirect_uri = str(body.get("redirect_uri") or "")
+    code_verifier = str(body.get("code_verifier") or "")
+
+    # 先核销（一碰即烧，不管接下来还通不通得过）；再比 client_id/redirect_uri；
+    # 最后做 PKCE。顺序是故意的：如果失败不烧码，攻击者能对同一个 code 反复猜
+    # code_verifier，把 PKCE 该有的"只准一次机会"变成"无限次机会"。
+    claims = oauth_cimd.redeem_authorization_code(TOKEN, code, _used_code_jtis)
+    if (
+        claims is None
+        or client_id != claims.get("client_id")
+        or redirect_uri != claims.get("redirect_uri")
+        or not oauth_cimd.verify_pkce_challenge(
+            code_verifier, claims.get("code_challenge", "")
+        )
+    ):
+        return _token_error(*_CODE_INVALID_ERROR)
+
+    # resource / audience 绑定（MCP 授权规范：token 必须绑定到指定的 resource）。
+    # 严格模式：客户端（这次请求或当初 /authorize 记下的）明确带了 resource 且
+    # 跟我们唯一的资源不一致 —— 直接拒，RFC 8707 §2 的专用错误码 invalid_target。
+    # 缺失则不拒绝，默认绑到我们自己（单资源桥，只服务这一个 /mcp）。
+    expected_resource = f"{PUBLIC_URL}/mcp"
+    effective_resource = body.get("resource") or claims.get("resource")
+    if effective_resource and effective_resource != expected_resource:
+        return _token_error(
+            "invalid_target",
+            f'expected resource "{expected_resource}", got "{effective_resource}"',
+        )
+
+    token, expires_in = oauth_cimd.issue_access_token(
+        TOKEN,
+        issuer=PUBLIC_URL,
+        audience=expected_resource,
+        subject=client_id,
+        ttl_seconds=TOKEN_TTL_DAYS * 86400,
+    )
+    return JSONResponse(
+        {
+            "access_token": token,
+            "token_type": "Bearer",
+            "expires_in": expires_in,
+            "scope": "mcp",
+        },
+        headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+    )
+
+
 # --- 鉴权守门层（第 2 层）---------------------------------------------------
 # 纯 ASGI 中间件：请求进来时只看一眼 Authorization 头，要么当场 401、要么原样
 # 放行，完全不碰响应流（避免 BaseHTTPMiddleware 掐断 streamable-http 的 SSE 长流）。
@@ -518,6 +642,9 @@ if __name__ == "__main__":
 
     if _PUBLIC_URL_WARNING:  # 铁律 5：PUBLIC_URL 缺失/坏值不拒启，但要醒目提示
         print(_PUBLIC_URL_WARNING, file=sys.stderr)
+
+    if _TOKEN_TTL_WARNING:  # 铁律 3/5：TTL 坏值不拒启，但要醒目提示
+        print(_TOKEN_TTL_WARNING, file=sys.stderr)
 
     app = mcp.streamable_http_app()
 
