@@ -220,11 +220,15 @@ def _token_matches(presented: str, expected: str) -> bool:
 
 
 def _unauthorized(message: str) -> JSONResponse:
-    """401 + 说人话的错误，附标准 WWW-Authenticate 头。"""
+    """401 + 说人话的错误，附 WWW-Authenticate 指路头。
+    resource_metadata 指向受保护资源元数据，Claude 据此发现授权服务器、走 OAuth
+    （RFC 9728 §5.1 / MCP 授权规范）。JSON 体保持人话报错不动（铁律 4）。
+    形状照抄 OB（其 server.py 4875-4877），地址换成我们自己的。"""
+    resource_metadata = f"{PUBLIC_URL}/.well-known/oauth-protected-resource/mcp"
     return JSONResponse(
         {"error": "unauthorized", "message": message},
         status_code=401,
-        headers={"WWW-Authenticate": "Bearer"},
+        headers={"WWW-Authenticate": f'Bearer resource_metadata="{resource_metadata}"'},
     )
 
 
