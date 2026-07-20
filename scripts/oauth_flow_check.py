@@ -80,9 +80,9 @@ def make_get(path: str, query: dict) -> Request:
     return Request(scope, receive)
 
 
-def make_post_form(path: str, form: dict) -> Request:
+def make_post_form(path: str, form: dict, query: dict | None = None) -> Request:
     body = urlencode(form).encode()
-    return _make_post_raw(path, body, b"application/x-www-form-urlencoded")
+    return _make_post_raw(path, body, b"application/x-www-form-urlencoded", query)
 
 
 def make_post_json(path: str, obj: dict) -> Request:
@@ -90,10 +90,11 @@ def make_post_json(path: str, obj: dict) -> Request:
     return _make_post_raw(path, body, b"application/json")
 
 
-def _make_post_raw(path: str, body: bytes, content_type: bytes) -> Request:
+def _make_post_raw(path: str, body: bytes, content_type: bytes,
+                    query: dict | None = None) -> Request:
     scope = {
         "type": "http", "method": "POST", "path": path,
-        "query_string": b"",
+        "query_string": urlencode(query).encode() if query else b"",
         "headers": [
             (b"content-type", content_type),
             (b"content-length", str(len(body)).encode()),
@@ -158,9 +159,15 @@ check("registration returned a client_id", bool(CLIENT_ID))
 
 verifier = base64.urlsafe_b64encode(os.urandom(48)).rstrip(b"=").decode("ascii")
 challenge = b64url(hashlib.sha256(verifier.encode("ascii")).digest())
+# state deliberately contains HTML-special characters (& < > " ') -- this is
+# exactly the case that used to risk corruption when state round-tripped
+# through an HTML-escaped hidden form field. Now that POST reads OAuth params
+# from the query string (which the form's action-less <form> naturally
+# resubmits), state never touches HTML escaping at all.
+STATE = "flow-check-state-&<>\"'-end"
 authorize_params = {
     "response_type": "code", "client_id": CLIENT_ID, "redirect_uri": REDIRECT_URI,
-    "state": "flow-check-state", "code_challenge": challenge,
+    "state": STATE, "code_challenge": challenge,
     "code_challenge_method": "S256",
 }
 
@@ -168,14 +175,34 @@ resp = run(server.oauth_authorize(make_get("/oauth/authorize", authorize_params)
 check("GET /oauth/authorize renders the password form", resp.status_code == 200,
       f"got {resp.status_code}")
 
-resp = run(server.oauth_authorize(make_post_form("/oauth/authorize", {
-    **authorize_params, "password": os.environ["BODYBRIDGE_PASSWORD"],
-})))
+# Real browser behavior: the <form> has no action, so POST goes to the same
+# URL+query string the GET was rendered from. Only password lives in the body.
+resp = run(server.oauth_authorize(make_post_form(
+    "/oauth/authorize", {"password": os.environ["BODYBRIDGE_PASSWORD"]},
+    query=authorize_params,
+)))
 check("POST /oauth/authorize with the correct password -> 302", resp.status_code == 302,
       f"got {resp.status_code}: {resp.body}")
-m = re.search(r"[?&]code=([^&]+)", resp.headers.get("location", ""))
+location = resp.headers.get("location", "")
+m = re.search(r"[?&]code=([^&]+)", location)
 check("authorization code present in the redirect", m is not None)
 code = unquote(m.group(1)) if m else None
+m_state = re.search(r"[?&]state=([^&]+)", location)
+returned_state = unquote(m_state.group(1)) if m_state else None
+check("state with HTML-special chars (& < > \" ') round-trips exactly",
+      returned_state == STATE, f"expected {STATE!r}, got {returned_state!r}")
+
+# Forged form-body params must NOT take effect -- only the query string (the
+# one the password page was actually rendered from) is trusted.
+resp = run(server.oauth_authorize(make_post_form(
+    "/oauth/authorize",
+    {"password": os.environ["BODYBRIDGE_PASSWORD"],
+     "client_id": "forged-client-id-in-form-body",
+     "redirect_uri": "https://attacker.example.com/steal"},
+    query=authorize_params,
+)))
+check("forged client_id/redirect_uri in form body -> ignored, still 302 using query params",
+      resp.status_code == 302, f"got {resp.status_code}: {resp.body}")
 
 # --- Step 3: exchange the code for a JWT via the real /oauth/token route ---
 

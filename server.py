@@ -442,11 +442,13 @@ def _redirect_with(redirect_uri: str, params: dict) -> RedirectResponse:
 
 
 def _validate_authorize_request(params: dict):
-    """校验 /oauth/authorize 的参数。GET、POST 共用同一份逻辑——POST 的隐藏字段
-    不被信任，原样重新走一遍这里，而不是假设 GET 已经验过了（这正是绕开 OB 那个
-    "client_info 为 None 时跳过 redirect_uri 校验"缺口的关键：dcr 模式下没有
-    本地注册表可查，验签本身就是唯一的"注册检查"；cimd 模式下 CIMD fetch
-    本身就是唯一的"注册检查"——两种模式都不允许有跳过路径）。
+    """校验 /oauth/authorize 的参数。GET、POST 共用同一份逻辑——POST 阶段这些
+    OAuth 参数一律从 request.query_params 读（表单 action 留空，浏览器提交时
+    天然带着原始查询字符串），不从表单体读、更不信任 HTML 隐藏字段，原样重新
+    走一遍这里，而不是假设 GET 已经验过了（这正是绕开 OB 那个 "client_info 为
+    None 时跳过 redirect_uri 校验"缺口的关键：dcr 模式下没有本地注册表可查，
+    验签本身就是唯一的"注册检查"；cimd 模式下 CIMD fetch 本身就是唯一的
+    "注册检查"——两种模式都不允许有跳过路径）。
 
     客户端身份解析按 BODYBRIDGE_CLIENT_REGISTRATION 二选一：
       dcr  -> 本地验签自签名 client_id（零网络请求），解出 redirect_uris
@@ -530,11 +532,22 @@ async def oauth_authorize(request: Request):
     if request.method == "GET":
         params = dict(request.query_params)
     else:
+        # 密码页的 <form> 没写 action，浏览器提交 POST 时天然带着原始查询
+        # 字符串（日志可见 POST /oauth/authorize?response_type=code&...）。
+        # 所以 OAuth 参数（state/client_id/redirect_uri/code_challenge/
+        # code_challenge_method/response_type/resource）一律从这里读，只有
+        # password 读表单体——state 从此不再经过 HTML 隐藏字段的转义/解码
+        # 往返（那条链路曾是"302 发出但 Claude 从不来换 token"的最可疑候选：
+        # 转义后的值如果没被标准浏览器行为完整解码回来就会跟原值对不上，
+        # Claude 校验 state 不符会静默丢弃回调，永远不会调 /oauth/token）。
+        # 这样也顺带堵死了表单体里被塞入伪造 client_id/redirect_uri 的可能
+        # ——一律以 query_params 为准，不认表单体里的同名字段。
+        params = dict(request.query_params)
         try:
             form = await request.form()
         except Exception:
             return _authorize_error_page("could not parse form submission.")
-        params = {k: str(v) for k, v in form.items()}
+        params["password"] = str(form.get("password", ""))
 
     stage, payload = _validate_authorize_request(params)
 
@@ -565,6 +578,22 @@ async def oauth_authorize(request: Request):
             status_code=401,
             headers=_AUTHORIZE_HEADERS,
         )
+
+    # 临时排障日志（定位"302 已发出但 Claude 从不来换 token"这个事故用）：
+    # 只打 state 的长度和脱敏后的首尾 8 位，绝不打全值；纯 ASCII（用
+    # backslashreplace 转义非 ASCII 字符，而不是让它们原样透出控制台）。
+    # 这条要确认的是我们目前看不到的关键事实——Claude 实际发来的 state
+    # 里到底有没有 HTML 特殊字符——查完可以删。
+    _diag_state = validated["state"] or ""
+    _diag_prefix = _diag_state[:8].encode("ascii", "backslashreplace").decode("ascii")
+    _diag_suffix = _diag_state[-8:].encode("ascii", "backslashreplace").decode("ascii")
+    _diag_has_special = any(c in _diag_state for c in "&<>\"'")
+    print(
+        f"[bodybridge] diagnostic: authorize state len={len(_diag_state)} "
+        f"prefix='{_diag_prefix}' suffix='{_diag_suffix}' "
+        f"has_html_special_chars={_diag_has_special}",
+        file=sys.stderr,
+    )
 
     code = oauth_cimd.issue_authorization_code(
         TOKEN,
