@@ -77,6 +77,31 @@ honestly instead of guessing. That refusal *is* the safety mechanism.
 > token to OAuth 2.1 in this version. See [MIGRATION.md](MIGRATION.md) for
 > what's different and what you need to do.
 
+### ⚠️ Public HTTPS address required
+
+claude.ai's custom connectors require a trusted SSL certificate — self-signed
+certs don't work — and the CIMD discovery flow needs Anthropic's servers to
+reach this bridge from the outside. So before connecting to claude.ai, you
+need a real, publicly reachable HTTPS address for the bridge.
+
+Set `BODYBRIDGE_PUBLIC_URL` to that address: scheme + host (+ port), no
+trailing slash, no `/mcp` path (the code appends that itself). Example:
+`BODYBRIDGE_PUBLIC_URL=https://bridge.example.com`.
+
+**This value must match, character for character, the URL you type into
+claude.ai when adding the connector** — scheme, host, port, path, and
+trailing slash all included. A mismatch fails resource validation and the
+connection is rejected.
+
+If unset, the bridge still starts (it falls back to a local address and
+prints a warning) — but CIMD discovery can't work, so it *runs* while being
+unreachable from claude.ai. Starting successfully is not the same as being
+configured correctly.
+
+On one-click deploy platforms, the domain is usually only assigned after
+deployment finishes — so the order is: deploy first, get the domain, then
+set `BODYBRIDGE_PUBLIC_URL` and restart.
+
 ### ⚠️ Choosing a deployment region
 
 The bridge must be deployed somewhere that satisfies **both**:
