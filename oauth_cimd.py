@@ -314,16 +314,40 @@ def _b64url_decode(s: str) -> bytes:
     return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
 
 
+def hash_client_id(client_id: str) -> str | None:
+    """client_id 是"标识"，不是"载荷"——JWT/签名 claims 该放标识，不是数据
+    容器。但我们的 client_id（尤其 dcr 模式下）本身就是自签名串，把
+    redirect_uris/client_name 都编码在里面（实测 194 字符）；如果 code、
+    access_token 里原样存一份完整 client_id，claims 体积会跟着 client_id
+    膨胀——access_token 还要在后续 7 天里跟着每次请求重发一遍，这是最贵的
+    一份。这里换成固定 43 字符的 SHA-256 base64url 摘要：不管 client_id
+    本身多长，claims 体积都不再随它变化，紧凑性是 JWT 的设计前提。
+
+    只需要"确认 token 阶段出示的 client_id 与 authorize 阶段是同一个"，
+    摘要足够——不需要也不该在 code/token 里携带 client_id 的全部内容。
+
+    任何异常一律返回 None，绝不上抛（铁律 3：client_id 在这里仍是外部输入，
+    调用方比较时 None 天然不会等于任何真实哈希值，安全地导致"不匹配"）。
+    """
+    try:
+        return _b64url_encode(hashlib.sha256(client_id.encode("utf-8")).digest())
+    except Exception:
+        return None
+
+
 def issue_authorization_code(secret: str, *, client_id: str, redirect_uri: str,
                               code_challenge: str, code_challenge_method: str,
                               resource: str | None, ttl_seconds: float,
                               now: float | None = None) -> str:
     """签一个自包含授权码（HMAC-SHA256，不是 JWT 库——手写省掉 alg 混淆攻击面，
     反正只有我们自己签、自己验，不需要跟第三方互操作）。签的是"防篡改+限时效"，
-    "有没有被兑换过"这件事签名本身答不了，见 redeem_authorization_code。"""
+    "有没有被兑换过"这件事签名本身答不了，见 redeem_authorization_code。
+
+    claims 里存的是 client_id_hash（见 hash_client_id），不是 client_id 原文
+    ——防止 code 体积跟着 client_id 膨胀。"""
     now = time.time() if now is None else now
     claims = {
-        "client_id": client_id,
+        "client_id_hash": hash_client_id(client_id),
         "redirect_uri": redirect_uri,
         "code_challenge": code_challenge,
         "code_challenge_method": code_challenge_method,

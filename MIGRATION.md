@@ -143,6 +143,35 @@ any session state. This means:
 If you need per-token revocation, that's a real gap to design around
 later — it isn't in scope for V1.
 
+## Internal token structure changed — no action needed
+
+Authorization codes and access tokens used to embed the client's full
+`client_id` value verbatim. Since `client_id` (especially in `dcr` mode) is
+itself a self-signed blob encoding `redirect_uris` and `client_name`, this
+meant a code or token's size grew with however large the client's
+registration was — and the access token carries that weight on every
+`/mcp` request for its whole lifetime, not just once. This version stores
+a SHA-256 hash of `client_id` (a fixed 43 characters) instead, in both the
+authorization code and the access token's `sub` claim. Verification is
+unaffected: the bridge still confirms "the client presenting this code/token
+is the same one that started the flow" — it just compares hashes instead of
+full values.
+
+**No upgrade action is needed.** This only changes the internal shape of
+*newly issued* tokens going forward. Any access token issued before this
+upgrade keeps working exactly as before, until it naturally expires (up to
+`BODYBRIDGE_TOKEN_TTL_DAYS` days) — because the auth middleware only ever
+validates a token's signature, `exp`, `aud`, and `iss`; it never reads or
+checks the `sub` claim's format. An old-style token (`sub` = full
+`client_id`) and a new-style token (`sub` = hash) are equally valid to the
+middleware, as long as the signature checks out.
+
+This is a different situation from rotating `BODYBRIDGE_TOKEN` (above):
+rotating the signing secret breaks the *signature* itself, which is what
+actually invalidates every outstanding token at once. This change never
+touched the signing mechanism — only what one claim inside the token
+contains — so it has no equivalent effect on already-issued tokens.
+
 ## Upgrade checklist
 
 1. Set `BODYBRIDGE_PASSWORD` — pick a long random value (see `.env.example`). The bridge will refuse to start without it.

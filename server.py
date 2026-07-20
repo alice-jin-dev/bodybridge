@@ -669,10 +669,16 @@ async def oauth_token(request: Request) -> JSONResponse:
     # 先核销（一碰即烧，不管接下来还通不通得过）；再比 client_id/redirect_uri；
     # 最后做 PKCE。顺序是故意的：如果失败不烧码，攻击者能对同一个 code 反复猜
     # code_verifier，把 PKCE 该有的"只准一次机会"变成"无限次机会"。
+    #
+    # code 里存的是 client_id 的哈希（见 oauth_cimd.hash_client_id），不是原文
+    # ——这里把客户端出示的 client_id 算一遍哈希再比对，效果跟直接比对完整
+    # client_id 完全等价（确认"token 阶段和 authorize 阶段是同一个客户端"），
+    # 只是不用在 code 里背整个 client_id 的重量。哈希是公开值的比对，不是秘密
+    # 比对，普通 == 即可，不需要 safe_compare（跟 redirect_uri 比对同一分野）。
     claims = oauth_cimd.redeem_authorization_code(TOKEN, code, _used_code_jtis)
     if (
         claims is None
-        or client_id != claims.get("client_id")
+        or oauth_cimd.hash_client_id(client_id) != claims.get("client_id_hash")
         or redirect_uri != claims.get("redirect_uri")
         or not oauth_cimd.verify_pkce_challenge(
             code_verifier, claims.get("code_challenge", "")
@@ -692,11 +698,16 @@ async def oauth_token(request: Request) -> JSONResponse:
             f'expected resource "{expected_resource}", got "{effective_resource}"',
         )
 
+    # sub 存 client_id 的哈希，不是原文——access_token 要在有效期内跟着每次
+    # /mcp 请求重发一遍，是三层嵌套里最贵的一层，claims 该放标识不是载荷。
+    # 这是一个客户端指纹：当前中间件不读取、不校验 sub（只验签名/exp/aud/iss），
+    # 留着它是为了将来做审计/排障时能认出"这个 token 是哪个客户端换出来的"，
+    # 不是当前安全校验链条的一部分。
     token, expires_in = oauth_cimd.issue_access_token(
         TOKEN,
         issuer=PUBLIC_URL,
         audience=expected_resource,
-        subject=client_id,
+        subject=oauth_cimd.hash_client_id(client_id),
         ttl_seconds=TOKEN_TTL_DAYS * 86400,
     )
     return JSONResponse(
