@@ -16,6 +16,7 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import secrets
 import socket
 import time
@@ -35,6 +36,47 @@ _REQUIRED_FIELDS = ("client_id", "client_name", "redirect_uris")
 
 # RFC 7636 code_challenge 语法：base64url 字符集，43-128 字符。
 _CODE_CHALLENGE_RE = _re_compile(r"^[A-Za-z0-9._~-]{43,128}$")
+
+
+def _read_project_version() -> str:
+    """从仓库根目录的 pyproject.toml 读版本号，拼进 CIMD fetch 的 User-Agent
+    ——诚实标识自己是谁，不伪装浏览器（猫鼠游戏没有尽头，对方随时能升级识别；
+    诚实标识才是负责任的默认做法）。任何失败（文件不存在、格式异常、tomllib
+    在这个 Python 版本上不存在等）一律回退到安全默认值，绝不因为读版本号
+    这种小事崩服务（铁律 3）——User-Agent 里带个占位版本号，总比整个 fetch
+    直接失败强。
+    """
+    default = "0.0.0"
+    try:
+        path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "pyproject.toml"
+        )
+        with open(path, "rb") as f:
+            raw = f.read()
+    except Exception:
+        return default
+    try:
+        import tomllib
+        version = tomllib.loads(raw.decode("utf-8")).get("project", {}).get("version")
+        if isinstance(version, str) and version.strip():
+            return version.strip()
+    except Exception:
+        pass
+    try:
+        import re as _re_module
+        m = _re_module.search(rb'^\s*version\s*=\s*"([^"]+)"', raw, _re_module.MULTILINE)
+        if m:
+            return m.group(1).decode("utf-8", "replace")
+    except Exception:
+        pass
+    return default
+
+
+_PROJECT_VERSION = _read_project_version()
+# CIMD fetch 用的出站 User-Agent：诚实标识 bodybridge 自己，不伪装浏览器。
+_CIMD_FETCH_USER_AGENT = (
+    f"bodybridge/{_PROJECT_VERSION} (+https://github.com/alice-jin-dev/bodybridge)"
+).encode("ascii", "replace")
 
 
 def safe_compare(a: str, b: str) -> bool:
@@ -204,7 +246,7 @@ def fetch_cimd_document(url: str, *, allowlist_hosts=None) -> CIMDResult:
             url,
             headers=[
                 (b"host", host_header),
-                (b"user-agent", b"bodybridge-cimd-fetch/1.0"),
+                (b"user-agent", _CIMD_FETCH_USER_AGENT),
                 (b"accept", b"application/json"),
             ],
             extensions={"timeout": {
