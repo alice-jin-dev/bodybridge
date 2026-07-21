@@ -23,6 +23,7 @@ They must complete an OAuth authorization flow (`/oauth/authorize` then
 | `BODYBRIDGE_TOKEN_TTL_DAYS` | No | `7` | How many days an issued access token stays valid. There's no refresh token in V1 — once it expires, the client re-authorizes. |
 | `BODYBRIDGE_CLIENT_REGISTRATION` | No | `dcr` | `dcr` or `cimd` — how the bridge establishes client identity. See "Client registration: DCR vs CIMD" below. |
 | `BODYBRIDGE_CIMD_ALLOWLIST` | No | unset (no restriction) | Comma-separated host allowlist for CIMD client discovery. Only relevant when `BODYBRIDGE_CLIENT_REGISTRATION=cimd`. |
+| `BODYBRIDGE_COMMAND_TIMEOUT_SECONDS` | No | `25` | Bridge-side deadline (seconds) for a single device command. On timeout the bridge returns a `timeout` result saying the command may or may not have run, instead of hanging forever. Applies to all three device tools. |
 
 See `.env.example` for the exact format of each.
 
@@ -171,6 +172,43 @@ rotating the signing secret breaks the *signature* itself, which is what
 actually invalidates every outstanding token at once. This change never
 touched the signing mechanism — only what one claim inside the token
 contains — so it has no equivalent effect on already-issued tokens.
+
+## Behavior change: `internal_error` is no longer `retryable`
+
+This is the one **breaking** change in this version, and it's a quiet one:
+nothing errors, nothing crashes, the behavior just silently shifts. Anyone
+relying on the old meaning gets no warning — which is exactly why it's
+written down here (iron rules 1 and 2).
+
+- **What changed**: an `internal_error` device result now comes back with
+  `retryable: false`. It used to be `retryable: true`.
+- **Why**: `retryable` was redefined to answer exactly one question —
+  *"is this command known for certain NOT to have reached the device?"*
+  Only `offline` (a confirmed non-delivery) qualifies. An `internal_error`
+  means something threw mid-flight and whether the device actually got the
+  command is **unknown**, so it must not advertise itself as safe to retry.
+  (This follows the general principle behind gRPC's official retry
+  proposal: only statuses that indicate the server never processed the
+  request should be retried; `INTERNAL`-class errors should not.)
+- **What you need to do**: nothing, *unless* your Adapter or some
+  upper-layer logic keyed off "`internal_error` is retryable" to auto-resend
+  a command. If it did, adjust it — re-sending on `internal_error` risks
+  running the command twice, because the first attempt may already have
+  executed.
+
+### New error code: `timeout` (additive, non-breaking)
+
+This version also adds a fifth error code, `timeout`, returned by the
+bridge's own per-command deadline (see `BODYBRIDGE_COMMAND_TIMEOUT_SECONDS`
+above). It's purely additive — nothing that worked before breaks — but
+Adapter authors should know it now exists:
+
+- It carries `retryable: false` for the same reason as `internal_error`:
+  on a timeout, whether the command reached the device is unknown, so it
+  must not be blindly retried.
+- The authoritative list of error codes now lives in `ErrorCode` in
+  `adapters/base.py` (`offline` / `timeout` / `internal_error` /
+  `unknown_command` / `bad_params`), with a picking guide in its docstring.
 
 ## Upgrade checklist
 

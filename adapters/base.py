@@ -10,6 +10,23 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
 
+class ErrorCode:
+    """设备失败的稳定机器码。
+
+    选码口诀（拿不准时按这个走）：
+      命令确定没到设备        -> OFFLINE
+      到没到不知道（超时）    -> TIMEOUT
+      指令本身不认识          -> UNKNOWN_COMMAND
+      参数不对                -> BAD_PARAMS
+      其余意外                -> 不要自己返回，让异常抛出，由 _safe 兜成 INTERNAL_ERROR
+    """
+    OFFLINE = "offline"
+    TIMEOUT = "timeout"
+    INTERNAL_ERROR = "internal_error"
+    UNKNOWN_COMMAND = "unknown_command"
+    BAD_PARAMS = "bad_params"
+
+
 @dataclass
 class Capability:
     """一条设备能力：send_command 能用的一个 command。"""
@@ -25,12 +42,20 @@ class DeviceResult:
 
     设备级失败一律当"数据"返回（ok=False 的正常信封），绝不当 MCP 协议错误抛，
     这样从根上绕开 isError / outputSchema 撞车（严格客户端 -32602）的坑。
+
+    retryable 只回答一个问题：这条命令是否【确定没有到达设备】。
+      确定没到               -> True（目前只有 OFFLINE 属于这类）
+      到没到不知道（如超时） -> False
+      到了但执行失败         -> False
+    依据：对齐 gRPC 官方重试提案的通用原则——只有那些表明"服务端未处理该请求"
+    的状态才应被重试；INTERNAL 类错误不应重试。Adapter 作者按这条填，不要凭
+    "再试一次会不会好"的直觉填。
     """
 
     ok: bool                       # 成功/失败，Claude 一眼分支
     message: str                  # 永远有，人话，可直接展示给用户
     data: dict | None = None       # 成功载荷（状态快照 / 能力清单）
-    error: str | None = None       # 失败机器码：offline / internal_error / unknown_command / bad_params
+    error: str | None = None       # 失败机器码，取值见 ErrorCode（类型保持 str，不强制第三方 import）
     retryable: bool = False        # 失败是否值得重试；成功时无意义，默认 False
 
     def to_dict(self) -> dict:
@@ -51,8 +76,7 @@ class DeviceResult:
     def failure(cls, error: str, message: str, *, retryable: bool,
                 data: dict | None = None) -> "DeviceResult":
         """retryable 必填关键字：逼调用方每次失败都想清楚该不该重试。
-        retryable=True  -> "别急，再试一次可能就好了"（如 offline）
-        retryable=False -> "别重试，问题在这次请求本身，得改"（如 bad_params）
+        retryable 的含义见 DeviceResult 的字段说明；错误码选哪个见 ErrorCode 的选码口诀。
         """
         return cls(ok=False, message=message, data=data, error=error, retryable=retryable)
 

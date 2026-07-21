@@ -1,9 +1,10 @@
 """bodybridge — MCP Server 层 + 鉴权守门层（最小可跑版本）"""
+import asyncio
 import contextlib
 import html
 import os
 import sys
-from urllib.parse import quote as urlquote, urlsplit
+from urllib.parse import quote as urlquote, urlsplit, urlunsplit
 
 import uvicorn
 from mcp.server.fastmcp import FastMCP
@@ -11,7 +12,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 import oauth_cimd
-from adapters.base import DeviceAdapter, DeviceResult
+from adapters.base import DeviceAdapter, DeviceResult, ErrorCode
 from adapters.mock import MockAdapter
 
 # 铁律 5/6：host 默认监听所有网卡——桥的定位就是被公网访问，且鉴权已强制
@@ -124,6 +125,29 @@ def _resolve_token_ttl_days() -> tuple[float, str | None]:
 TOKEN_TTL_DAYS, _TOKEN_TTL_WARNING = _resolve_token_ttl_days()
 
 
+def _resolve_command_timeout_seconds() -> tuple[float, str | None]:
+    """桥侧 deadline：一条设备指令最多等多少秒，超了就返回 TIMEOUT 信封、不再干等。
+    合理默认值 25 秒（铁律 5）：没设是正常路径，静默用默认、不警告；设了但坏值
+    （非数字/<=0）才算用户明确操作出错，警告 + 回退 25（铁律 3：坏值绝不崩服务）。"""
+    raw = os.environ.get("BODYBRIDGE_COMMAND_TIMEOUT_SECONDS", "").strip()
+    if not raw:
+        return 25.0, None
+    try:
+        timeout = float(raw)
+        if timeout <= 0:
+            raise ValueError("must be positive")
+    except ValueError:
+        safe = raw.encode("ascii", "replace").decode("ascii")
+        return 25.0, (
+            f"[bodybridge] warning: BODYBRIDGE_COMMAND_TIMEOUT_SECONDS='{safe}' is "
+            "invalid (must be a positive number); falling back to 25 seconds."
+        )
+    return timeout, None
+
+
+COMMAND_TIMEOUT_SECONDS, _COMMAND_TIMEOUT_WARNING = _resolve_command_timeout_seconds()
+
+
 def _resolve_public_url() -> tuple[str, str | None]:
     """解析桥的公网基址，供 OAuth 元数据（RFC 9728/8414）用。
     返回 (基址_去尾斜杠, 警告文案_或_None)。
@@ -187,16 +211,27 @@ device: DeviceAdapter = MockAdapter()
 
 
 async def _safe(coro) -> dict:
-    """安全网：Adapter 万一漏抛异常，也兜成友好信封，保证服务永不 500。
-    设备级失败走的是 ok=False 的正常返回（不是 isError），从根上避开
-    MCP 的 isError/outputSchema 撞车坑。"""
+    """安全网 + 桥侧 deadline：Adapter 万一漏抛异常或卡住不返回，都兜成友好信封，
+    保证服务永不 500、永不无限期挂起。设备级失败走的是 ok=False 的正常返回
+    （不是 isError），从根上避开 MCP 的 isError/outputSchema 撞车坑。"""
     try:
-        return (await coro).to_dict()
+        result = await asyncio.wait_for(coro, timeout=COMMAND_TIMEOUT_SECONDS)
+        return result.to_dict()
+    except asyncio.TimeoutError:
+        # ⚠️ 这个 except 必须排在 except Exception 之前：asyncio.TimeoutError 也是
+        # Exception 的子类，顺序反了超时会被吃成 internal_error，TIMEOUT 码永不出现。
+        # message 必须体现"不确定"——超时代表"到没到设备不知道"，写成"执行失败"是撒谎。
+        return DeviceResult.failure(
+            ErrorCode.TIMEOUT,
+            f"设备在 {COMMAND_TIMEOUT_SECONDS:g} 秒内没有响应，这条命令可能已经执行、"
+            "也可能没有，请先查一下设备状态再决定要不要重发。",
+            retryable=False,
+        ).to_dict()
     except Exception as e:
         return DeviceResult.failure(
-            "internal_error",
+            ErrorCode.INTERNAL_ERROR,
             f"设备适配器内部异常，已兜底（{type(e).__name__}）。",
-            retryable=True,
+            retryable=False,
         ).to_dict()
 
 
@@ -636,6 +671,38 @@ def _token_error(error: str, description: str, status: int = 400) -> JSONRespons
     )
 
 
+def _normalize_resource_url(url: str) -> str:
+    """规范化一个 resource URI，供 token 端点的 audience 比对用。
+
+    改的是"比对前先规范化"这个轴，不是"普通 != vs 常量时间比对"那个轴（后者
+    保持不动：resource 是公开值，无需常量时间比对）。MCP 授权规范 / RFC 8707
+    要求比对时接受【规范化形式】，而不是对用户输入原文逐字节严格比对——否则
+    大小写、尾斜杠、默认端口、fragment 这些无害差异都会误判成 invalid_target。
+
+    规则：scheme 与 host 转小写、去尾部斜杠、去 fragment、去默认端口
+    （http 的 :80 / https 的 :443）；其余（path 大小写、query 等）原样不动。
+
+    resource 是外部输入：任何解析异常一律原样返回（铁律 3：绝不崩）——规范化
+    不了的怪值天然匹配不上我们干净的 expected，会被正常拒掉，安全。"""
+    try:
+        parts = urlsplit(url)
+        scheme = parts.scheme.lower()
+        host = (parts.hostname or "").lower()
+        port = parts.port  # 非法端口会在这里抛 ValueError，落到下面 except
+        is_default_port = (
+            (scheme == "http" and port == 80)
+            or (scheme == "https" and port == 443)
+        )
+        netloc = host
+        if port is not None and not is_default_port:
+            netloc = f"{host}:{port}"
+        path = parts.path.rstrip("/")
+        # fragment 丢弃（第 5 个位置传空串）；query 原样保留
+        return urlunsplit((scheme, netloc, path, parts.query, ""))
+    except Exception:
+        return url
+
+
 @mcp.custom_route("/oauth/token", methods=["POST"])
 async def oauth_token(request: Request) -> JSONResponse:
     # Anthropic 官方文档点名要求：/token 必须真支持
@@ -692,11 +759,14 @@ async def oauth_token(request: Request) -> JSONResponse:
     # 缺失则不拒绝，默认绑到我们自己（单资源桥，只服务这一个 /mcp）。
     expected_resource = f"{PUBLIC_URL}/mcp"
     effective_resource = body.get("resource") or claims.get("resource")
-    if effective_resource and effective_resource != expected_resource:
-        return _token_error(
-            "invalid_target",
-            f'expected resource "{expected_resource}", got "{effective_resource}"',
-        )
+    if effective_resource:
+        expected_norm = _normalize_resource_url(expected_resource)
+        effective_norm = _normalize_resource_url(effective_resource)
+        if effective_norm != expected_norm:
+            return _token_error(
+                "invalid_target",
+                f'expected resource "{expected_norm}", got "{effective_norm}"',
+            )
 
     # sub 存 client_id 的哈希，不是原文——access_token 要在有效期内跟着每次
     # /mcp 请求重发一遍，是三层嵌套里最贵的一层，claims 该放标识不是载荷。
@@ -837,6 +907,9 @@ if __name__ == "__main__":
 
     if _TOKEN_TTL_WARNING:  # 铁律 3/5：TTL 坏值不拒启，但要醒目提示
         print(_TOKEN_TTL_WARNING, file=sys.stderr)
+
+    if _COMMAND_TIMEOUT_WARNING:  # 铁律 3/5：deadline 坏值不拒启，回退 25，但要提示
+        print(_COMMAND_TIMEOUT_WARNING, file=sys.stderr)
 
     if _PORT_WARNING:  # 铁律 3/5：端口坏值不拒启，跳过它、试下一优先级，但要提示
         print(_PORT_WARNING, file=sys.stderr)

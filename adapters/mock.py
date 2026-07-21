@@ -4,7 +4,7 @@
 各种防御路径都演示出来。真设备（如 StackChan/WebSocket）照着同一契约实现即可，
 桥身不动。
 """
-from .base import Capability, DeviceAdapter, DeviceResult
+from .base import Capability, DeviceAdapter, DeviceResult, ErrorCode
 
 # 这台虚拟设备声明的能力清单（send_command 能用的 command）
 _CAPABILITIES = [
@@ -38,7 +38,7 @@ class MockAdapter(DeviceAdapter):
     async def get_status(self) -> DeviceResult:
         if not self._online:
             return DeviceResult.failure(
-                "offline",
+                ErrorCode.OFFLINE,
                 "设备当前无响应（可能断线），已停在原地。",
                 retryable=True,
             )
@@ -63,7 +63,7 @@ class MockAdapter(DeviceAdapter):
         # 离线：可预期的断线兜底
         if not self._online and command != "set_online":
             return DeviceResult.failure(
-                "offline",
+                ErrorCode.OFFLINE,
                 "设备当前无响应（可能断线），指令没发出去。",
                 retryable=True,
             )
@@ -71,7 +71,7 @@ class MockAdapter(DeviceAdapter):
         known = {c.name for c in _CAPABILITIES}
         if command not in known:
             return DeviceResult.failure(
-                "unknown_command",
+                ErrorCode.UNKNOWN_COMMAND,
                 f"设备不认识指令 '{command}'。已知指令：{sorted(known)}。",
                 retryable=False,
             )
@@ -81,7 +81,7 @@ class MockAdapter(DeviceAdapter):
             text = params.get("text")
             if not isinstance(text, str) or text == "":
                 return DeviceResult.failure(
-                    "bad_params",
+                    ErrorCode.BAD_PARAMS,
                     "say 需要一个非空字符串参数 text。",
                     retryable=False,
                 )
@@ -92,7 +92,7 @@ class MockAdapter(DeviceAdapter):
             yaw, pitch = params.get("yaw"), params.get("pitch")
             if not _is_number(yaw) or not _is_number(pitch):
                 return DeviceResult.failure(
-                    "bad_params",
+                    ErrorCode.BAD_PARAMS,
                     "move_head 需要数字参数 yaw 和 pitch。",
                     retryable=False,
                 )
@@ -103,7 +103,7 @@ class MockAdapter(DeviceAdapter):
             value = params.get("value")
             if not isinstance(value, bool):
                 return DeviceResult.failure(
-                    "bad_params",
+                    ErrorCode.BAD_PARAMS,
                     "set_online 需要布尔参数 value（true/false）。",
                     retryable=False,
                 )
@@ -114,7 +114,7 @@ class MockAdapter(DeviceAdapter):
 
         # 理论到不了这里（known 已兜住），保底再兜一层
         return DeviceResult.failure(
-            "unknown_command",
+            ErrorCode.UNKNOWN_COMMAND,
             f"设备不认识指令 '{command}'。",
             retryable=False,
         )
