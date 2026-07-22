@@ -66,6 +66,12 @@ TOKEN = os.environ.get("BODYBRIDGE_TOKEN", "").strip()
 # 比"桥能起但神秘地授权不了"诚实）。
 PASSWORD = os.environ.get("BODYBRIDGE_PASSWORD", "").strip()
 
+# 设备握手鉴权用的预置 token（第 3 层 /device 端点）。⚠️ 与 BODYBRIDGE_TOKEN 是
+# 两回事：后者现在是 JWT 签名密钥（服务端秘密，绝不能给设备），这个才是设备出示
+# 的凭证。缺失【不】在这里 fail-fast——当前 MockAdapter 没有 /device 端点、根本不
+# 需要它；"缺 token 就拒绝设备连接"的强制放到第 4 步端点里（那时才有 /device）。
+DEVICE_TOKEN = os.environ.get("BODYBRIDGE_DEVICE_TOKEN", "").strip()
+
 # 可选：CIMD 抓取的 host 白名单。仅在 BODYBRIDGE_CLIENT_REGISTRATION=cimd 时
 # 生效——默认空 = 通用防护（不限 host，但下面一系列 SSRF 防护照做）；设了就
 # 只放行这些 host，给想锁死的用户自由。
@@ -146,6 +152,89 @@ def _resolve_command_timeout_seconds() -> tuple[float, str | None]:
 
 
 COMMAND_TIMEOUT_SECONDS, _COMMAND_TIMEOUT_WARNING = _resolve_command_timeout_seconds()
+
+
+def _resolve_heartbeat_seconds() -> tuple[float, str | None]:
+    """心跳间隔：映射到 websockets 库的 ping_interval——库每隔这么多秒自动发一个
+    协议级 ping。pong 超时（用库默认 ping_timeout，不单开旋钮）则库关连，桥在关连
+    回调里立刻标 offline（见第 4 步）。合理默认 25 秒（铁律 5）：没设静默用默认、
+    不警告；设了但坏值（非数字/<=0）才算用户明确操作出错，警告 + 回退 25（铁律 3：
+    坏值绝不崩服务）。⚠️ 与 COMMAND_TIMEOUT_SECONDS 默认值都是 25 只是巧合，两个
+    独立旋钮：这个是链路保活间隔，那个是单条命令的 deadline。"""
+    raw = os.environ.get("BODYBRIDGE_HEARTBEAT_SECONDS", "").strip()
+    if not raw:
+        return 25.0, None
+    try:
+        hb = float(raw)
+        if hb <= 0:
+            raise ValueError("must be positive")
+    except ValueError:
+        safe = raw.encode("ascii", "replace").decode("ascii")
+        return 25.0, (
+            f"[bodybridge] warning: BODYBRIDGE_HEARTBEAT_SECONDS='{safe}' is invalid "
+            "(must be a positive number); falling back to 25 seconds."
+        )
+    return hb, None
+
+
+HEARTBEAT_SECONDS, _HEARTBEAT_WARNING = _resolve_heartbeat_seconds()
+
+
+def _resolve_max_payload_bytes() -> tuple[int, str | None]:
+    """设备帧载荷上限：映射到 websockets 库的 max_size（超限库以 close code 1009 关
+    连，是防内存打爆的硬护盾）。默认 64 KB（命令通常几百字节）；必须可配置——桥面向
+    所有可联网硬件，树莓派能吃 1 MB、ESP32 可能几 KB 就爆，不能按某一种定死。
+    ⚠️ 设得【过小】（小于典型 result 回执帧大小）会导致正常回执被库以 1009 关连接、
+    设备刚连上就被踢；桥不强制下限（保持"不替用户兜合理性"），但建议不低于约 4 KB，
+    给 result 的 message + data 留够余量。合理默认（铁律 5）：没设静默用默认；坏值
+    （非整数/<=0）警告 + 回退（铁律 3）。"""
+    raw = os.environ.get("BODYBRIDGE_MAX_PAYLOAD_BYTES", "").strip()
+    if not raw:
+        return 65536, None
+    try:
+        n = int(raw)
+        if n <= 0:
+            raise ValueError("must be positive")
+    except ValueError:
+        safe = raw.encode("ascii", "replace").decode("ascii")
+        return 65536, (
+            f"[bodybridge] warning: BODYBRIDGE_MAX_PAYLOAD_BYTES='{safe}' is invalid "
+            "(must be a positive integer); falling back to 65536 (64 KB)."
+        )
+    return n, None
+
+
+MAX_PAYLOAD_BYTES, _MAX_PAYLOAD_WARNING = _resolve_max_payload_bytes()
+
+
+def _resolve_max_inflight() -> tuple[int, str | None]:
+    """在途命令表上限：同一时刻最多允许多少条命令在等设备回 result，超了拒绝（话术
+    是"太多了"不是"做不到"，见第 6 步）。正常同时在途只 1–2 条，默认 8 是个"小到能
+    一眼发现异常"的数字。合理默认（铁律 5）：没设静默用默认；坏值（非整数/<=0）警告
+    + 回退（铁律 3）。"""
+    raw = os.environ.get("BODYBRIDGE_MAX_INFLIGHT", "").strip()
+    if not raw:
+        return 8, None
+    try:
+        n = int(raw)
+        if n <= 0:
+            raise ValueError("must be positive")
+    except ValueError:
+        safe = raw.encode("ascii", "replace").decode("ascii")
+        return 8, (
+            f"[bodybridge] warning: BODYBRIDGE_MAX_INFLIGHT='{safe}' is invalid "
+            "(must be a positive integer); falling back to 8."
+        )
+    return n, None
+
+
+MAX_INFLIGHT, _MAX_INFLIGHT_WARNING = _resolve_max_inflight()
+
+# 库的 max_queue：已收到但应用还没取走的帧最多缓存几个。库默认 32；桥这侧命令往返
+# 很稀疏（正常同时在途 1–2 条），调低到 16 足够，也顺带压低内存上界（websockets 内
+# 存约 4 × max_size × max_queue）。做成固定常量而非环境变量：它太冷门，不值得多开一
+# 个没人会调的旋钮（未知需求留白）。
+DEVICE_MAX_QUEUE = 16
 
 
 def _resolve_public_url() -> tuple[str, str | None]:
@@ -916,6 +1005,15 @@ if __name__ == "__main__":
 
     if _CLIENT_REGISTRATION_WARNING:  # 铁律 3/5：模式坏值不拒启，回退 dcr，但要提示
         print(_CLIENT_REGISTRATION_WARNING, file=sys.stderr)
+
+    if _HEARTBEAT_WARNING:  # 铁律 3/5：心跳间隔坏值不拒启，回退 25，但要提示
+        print(_HEARTBEAT_WARNING, file=sys.stderr)
+
+    if _MAX_PAYLOAD_WARNING:  # 铁律 3/5：载荷上限坏值不拒启，回退 64KB，但要提示
+        print(_MAX_PAYLOAD_WARNING, file=sys.stderr)
+
+    if _MAX_INFLIGHT_WARNING:  # 铁律 3/5：在途上限坏值不拒启，回退 8，但要提示
+        print(_MAX_INFLIGHT_WARNING, file=sys.stderr)
 
     # 无条件打印：实际监听地址 + 端口来自哪个变量，排障第一眼就看得到（铁律 4）。
     print(f"[bodybridge] listening on {HOST}:{PORT} (port source: {_PORT_SOURCE})",
