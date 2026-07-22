@@ -440,11 +440,28 @@ async def _device_endpoint(websocket: WebSocket) -> None:
         await websocket.close(code=1008)
         return
 
-    # --- 通过三道闸。真正的 accept + 接入 + 收帧循环在块 4/5 ---
-    # 本块占位：先 accept 再立刻正常关（证明鉴权分支确实放行了）。块 4 把这两行
-    # 换成 accept -> attach_connection -> 收帧循环。
+    # --- 通过三道闸，正式接入 ---
     await websocket.accept()
-    await websocket.close(code=1000)
+
+    # 决策 2：单连接"新踢旧"。attach 先把指针指向新连接（无 None 空窗）并返回被顶掉
+    # 的旧连接，由这里负责关闭。关旧用语义明确的应用码 4409（"被新连接取代"，仿
+    # HTTP 409 Conflict）+ reason，方便固件端日志区分"我是被顶掉的，不是网络抖"。
+    old = device.attach_connection(websocket)
+    if old is not None:
+        try:
+            await old.close(code=4409, reason="replaced by a new device connection")
+        except Exception:
+            pass  # 旧连接可能已在关闭中，关它失败无所谓，尽力而为，绝不抛（铁律 3）
+
+    try:
+        # 块 5：收帧循环（parse_result_frame + 记日志）。本块占位：暂不收帧，直接
+        # 落到 finally 清理（连接随即断开）。块 5 把这里换成真正的 while 收帧。
+        pass
+    finally:
+        # 断开（设备主动断 / 网络断 / pong 超时被 uvicorn 关 / 被新连接踢）都汇到
+        # 这里：compare-and-clear（决策 2/3）——只有 _connection 还是自己才清，立刻
+        # 标 offline。被踢的旧连接走到这时 _connection 已是新连接，不会误清它。
+        device.detach_connection(websocket)
 
 
 # --- OAuth 元数据端点（第 2 层 · CIMD 发现）--------------------------------
