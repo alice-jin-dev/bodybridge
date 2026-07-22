@@ -25,6 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import server  # noqa: E402
 from adapters.base import ErrorCode  # noqa: E402
+from adapters.esp32 import ESP32Adapter  # noqa: E402
 
 FAILURES = []
 
@@ -135,6 +136,39 @@ for _label, _variant in _MISMATCH:
           f"{_variant!r} normalized to "
           f"{server._normalize_resource_url(_variant)!r}, which wrongly matched "
           f"{_canon_norm!r}")
+
+
+# --- ESP32Adapter connection ownership: single-connection new-kicks-old, with
+# compare-and-clear so a kicked-old connection's later teardown does NOT wipe the
+# freshly-attached new connection. Pure in-memory identity swaps, no network.
+# conn_a / conn_b are plain sentinels -- attach/detach only compare with `is`.
+
+_esp = ESP32Adapter()
+_conn_a = object()
+_conn_b = object()
+
+check("esp32 attach A (no prior connection) -> returns None",
+      _esp.attach_connection(_conn_a) is None)
+check("esp32 attach A -> _connection is now A",
+      _esp._connection is _conn_a)
+
+_old = _esp.attach_connection(_conn_b)
+check("esp32 attach B (A present) -> returns the kicked-old A",
+      _old is _conn_a,
+      f"got {_old!r}")
+check("esp32 attach B -> _connection is now B",
+      _esp._connection is _conn_b)
+
+# A was already kicked; A's later teardown must NOT wipe the current connection B:
+_esp.detach_connection(_conn_a)
+check("esp32 detach A (already kicked) -> compare-and-clear leaves _connection as B "
+      "(no friendly-fire on the new connection)",
+      _esp._connection is _conn_b)
+
+# B is the current connection; detaching it really clears:
+_esp.detach_connection(_conn_b)
+check("esp32 detach B (current) -> _connection cleared to None",
+      _esp._connection is None)
 
 
 print(f"\n=== {len(FAILURES) == 0 and 'ALL CHECKS PASSED' or f'{len(FAILURES)} FAILURE(S)'} ===")

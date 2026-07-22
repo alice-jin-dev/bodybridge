@@ -27,11 +27,28 @@ CMD_LIST_CAPABILITIES = "list_capabilities"
 
 
 class ESP32Adapter(DeviceAdapter):
+    # 本 adapter 支持设备主动持长连接，端点据此放行 /device（见 server.py）。
+    supports_direct_connection = True
+
     def __init__(self) -> None:
         # 廉价内存构造，永不 I/O(契约)。_connection = 当前设备的 websockets 连接
-        # 对象，由 /device 端点(第 4 步)塞入/清空；None = 当前没有设备连着。
-        # 单连接：全桥同时只持一条，"新连接踢旧"在端点侧 enforce(第 4 步)。
+        # 对象，由 /device 端点(第 4 步)经 attach/detach 塞入/清空；None = 没有设备
+        # 连着。单连接"新踢旧"的切换逻辑就在下面 attach/detach 里（决策 2）。
         self._connection = None
+
+    def attach_connection(self, connection) -> object | None:
+        # 单连接"新踢旧"：先把指针指向新连接（绝无 None 空窗，也绝不同时指两条），
+        # 返回旧连接交给端点关闭。单线程 asyncio 下这行赋值是原子的。
+        old = self._connection
+        self._connection = connection
+        return old
+
+    def detach_connection(self, connection) -> None:
+        # compare-and-clear：只有"当前记录的就是这一条"才清空。被顶掉的旧连接稍后
+        # 断开走到这里时，_connection 已是新连接、不是它自己 -> 不清，新连接毫发无伤。
+        # 这是"旧连接的清理不会误杀刚接上的新连接"的关键（决策 2）。
+        if self._connection is connection:
+            self._connection = None
 
     # --- 生命周期 ---------------------------------------------------------
     async def setup(self) -> DeviceResult:

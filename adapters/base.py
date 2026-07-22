@@ -129,3 +129,22 @@ class DeviceAdapter(ABC):
         故从签名上就摁死——只管尽力清理。默认：什么都不做。
         """
         return None
+
+    # --- 直连能力（可选）：只有"设备主动持长连接"的 adapter 才需要覆盖 --------
+    # 默认 False + no-op，简单 adapter（如 Mock）白继承、不用理会——和 setup/
+    # teardown 同款风格。/device 端点靠 supports_direct_connection 判断当前设备
+    # 是否支持直连；不支持就拒绝一切连接（见 server.py /device 端点）。
+    # attach/detach 是纯内存状态操作（只挪一个指针），故为同步方法、不 async：
+    # 关闭旧连接那步真正的 I/O 由端点做（await old.close()），不在这里。
+
+    supports_direct_connection: bool = False
+
+    def attach_connection(self, connection) -> object | None:
+        """接入一条新的设备连接，返回被顶替下来的旧连接（None=之前没有），
+        由调用方（端点）负责关闭旧连接。默认 no-op：不支持直连的 adapter 根本
+        不会被调用到（端点已挡在 supports_direct_connection 那关）。"""
+        return None
+
+    def detach_connection(self, connection) -> None:
+        """连接断开时调用。默认 no-op（compare-and-clear 由需要它的子类实现）。"""
+        return None
