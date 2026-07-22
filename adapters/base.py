@@ -15,12 +15,14 @@ class ErrorCode:
 
     选码口诀（拿不准时按这个走）：
       命令确定没到设备        -> OFFLINE
+      桥主动挡下（在途太多）  -> BUSY（命令没发出去，同样是"确定没到"）
       到没到不知道（超时）    -> TIMEOUT
       指令本身不认识          -> UNKNOWN_COMMAND
       参数不对                -> BAD_PARAMS
       其余意外                -> 不要自己返回，让异常抛出，由 _safe 兜成 INTERNAL_ERROR
     """
     OFFLINE = "offline"
+    BUSY = "busy"
     TIMEOUT = "timeout"
     INTERNAL_ERROR = "internal_error"
     UNKNOWN_COMMAND = "unknown_command"
@@ -44,7 +46,9 @@ class DeviceResult:
     这样从根上绕开 isError / outputSchema 撞车（严格客户端 -32602）的坑。
 
     retryable 只回答一个问题：这条命令是否【确定没有到达设备】。
-      确定没到               -> True（目前只有 OFFLINE 属于这类）
+      确定没到               -> True（目前 OFFLINE 与 BUSY 属于这类：OFFLINE 是
+                                 设备不在线，BUSY 是桥主动挡下、命令根本没发出去，
+                                 两者殊途同归——都是"确定没到"）
       到没到不知道（如超时） -> False
       到了但执行失败         -> False
     依据：对齐 gRPC 官方重试提案的通用原则——只有那些表明"服务端未处理该请求"
@@ -147,4 +151,9 @@ class DeviceAdapter(ABC):
 
     def detach_connection(self, connection) -> None:
         """连接断开时调用。默认 no-op（compare-and-clear 由需要它的子类实现）。"""
+        return None
+
+    def deliver_result(self, frame_id: str, result: "DeviceResult") -> None:
+        """收到设备回的 result 时调用，把它投给正在等待这个 frame_id 的调用方。
+        默认 no-op：不支持直连的 adapter 根本不会被调用到。"""
         return None
