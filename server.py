@@ -16,6 +16,7 @@ from starlette.websockets import WebSocket
 import oauth_cimd
 from adapters.base import DeviceAdapter, DeviceResult, ErrorCode
 from adapters.mock import MockAdapter
+from adapters.ws_protocol import parse_result_frame
 
 # 铁律 5/6：host 默认监听所有网卡——桥的定位就是被公网访问，且鉴权已强制
 # （缺 TOKEN/PASSWORD 直接拒启），默认只听本机反而跟定位相反。用户显式设
@@ -454,9 +455,26 @@ async def _device_endpoint(websocket: WebSocket) -> None:
             pass  # 旧连接可能已在关闭中，关它失败无所谓，尽力而为，绝不抛（铁律 3）
 
     try:
-        # 块 5：收帧循环（parse_result_frame + 记日志）。本块占位：暂不收帧，直接
-        # 落到 finally 清理（连接随即断开）。块 5 把这里换成真正的 while 收帧。
-        pass
+        # 收帧循环：不停收帧，解析 -> 记日志。本步（第 4 步）到"解析 + 记日志"为止，
+        # 不投递——把 result 按 id 投进在途表是第 6 步，那时才有在途表（决策 4）。
+        # 用低层 receive() 而非 receive_text()：亲手判 disconnect、亲手兜非文本帧，
+        # 一个坏帧都不许掀翻循环（铁律 3）。
+        while True:
+            event = await websocket.receive()
+            if event["type"] == "websocket.disconnect":
+                break
+            # 协议是 JSON 文本帧；二进制/无 text 的帧 -> text 为 None，parse 兜成忽略。
+            outcome = parse_result_frame(event.get("text"))
+            if outcome.ignore_reason is not None:
+                print(f"[bodybridge] /device: ignored a frame -- {outcome.ignore_reason}",
+                      file=sys.stderr)
+                continue
+            if outcome.debug_note is not None:
+                print(f"[bodybridge] /device: {outcome.debug_note}", file=sys.stderr)
+            # 决策 4：本步只记日志、不投递。第 6 步按 outcome.frame_id 投进在途表。
+            print(f"[bodybridge] /device: received result for id={outcome.frame_id} "
+                  f"(ok={outcome.result.ok}); dispatch to in-flight table lands in step 6.",
+                  file=sys.stderr)
     finally:
         # 断开（设备主动断 / 网络断 / pong 超时被 uvicorn 关 / 被新连接踢）都汇到
         # 这里：compare-and-clear（决策 2/3）——只有 _connection 还是自己才清，立刻
