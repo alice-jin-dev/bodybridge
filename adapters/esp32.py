@@ -26,21 +26,46 @@ CMD_GET_STATUS = "get_status"
 CMD_LIST_CAPABILITIES = "list_capabilities"
 
 
+def _disconnect_timeout_result() -> DeviceResult:
+    """连接断开（新连接顶替旧的 / 当前连接掉线）时，用来叫醒所有还在等的
+    _send_and_wait 的信封。这些命令的帧多半已经发出（先登记后发帧），设备到底
+    处理没处理，桥不知道——只能是 timeout，绝不能是 offline（offline = 确定没到
+    设备，这里恰恰不确定，说 offline 就是撒谎，违背"宁可说不确定、不可说假话"）。
+    """
+    return DeviceResult.failure(
+        ErrorCode.TIMEOUT,
+        "设备连接已断开，这条命令可能已经执行、也可能没有，"
+        "请先查一下设备状态再决定要不要重发。",
+        retryable=False,
+    )
+
+
 class ESP32Adapter(DeviceAdapter):
     # 本 adapter 支持设备主动持长连接，端点据此放行 /device（见 server.py）。
     supports_direct_connection = True
 
-    def __init__(self) -> None:
+    def __init__(self, max_inflight: int = 8) -> None:
         # 廉价内存构造，永不 I/O(契约)。_connection = 当前设备的 websockets 连接
         # 对象，由 /device 端点(第 4 步)经 attach/detach 塞入/清空；None = 没有设备
         # 连着。单连接"新踢旧"的切换逻辑就在下面 attach/detach 里（决策 2）。
         self._connection = None
+        # 在途命令表：frame_id -> 正在等这条 result 的 asyncio.Future[DeviceResult]。
+        # 谁 await（_send_and_wait）、谁 set_result（deliver_result / 断线清算），
+        # 见下方方法。max_inflight 由第 7 步切换时传入 server.py 的 MAX_INFLIGHT
+        # （adapter 不 import server，避免循环依赖，所以走构造参数）；默认 8 只是
+        # 让这个类脱离 server 也能独立构造、独立测试。
+        self._inflight: dict[str, "asyncio.Future"] = {}
+        self._max_inflight = max_inflight
 
     def attach_connection(self, connection) -> object | None:
         # 单连接"新踢旧"：先把指针指向新连接（绝无 None 空窗，也绝不同时指两条），
         # 返回旧连接交给端点关闭。单线程 asyncio 下这行赋值是原子的。
         old = self._connection
         self._connection = connection
+        # 决策 7：此刻 _inflight 里的条目全部属于【正被替换掉的旧连接】——它们的
+        # 帧多半已经发出（先登记后发帧），设备到底处理没处理不知道，只能用 timeout
+        # 立刻叫醒，不能让它们干等到 _safe 的 25s 才知道连接已经换了。
+        self._fail_all_inflight(_disconnect_timeout_result())
         return old
 
     def detach_connection(self, connection) -> None:
@@ -49,6 +74,22 @@ class ESP32Adapter(DeviceAdapter):
         # 这是"旧连接的清理不会误杀刚接上的新连接"的关键（决策 2）。
         if self._connection is connection:
             self._connection = None
+            # 决策 7：这条连接掉线，它名下还在等的命令同样立刻用 timeout 叫醒
+            # （不是 offline——理由同 attach：帧多半已发出，不确定设备处理没处理，
+            # 说 offline 就是撒谎；见 _disconnect_timeout_result 的说明）。
+            self._fail_all_inflight(_disconnect_timeout_result())
+
+    def _fail_all_inflight(self, result: DeviceResult) -> None:
+        """把当前在途表里所有还没完成的 future 一次性用 result 叫醒，然后清空表。
+        整表替换（而非原地遍历 + pop）：先把 self._inflight 换成新空 dict，再遍历
+        旧表，这样遍历过程中不会有人往正在遍历的字典里增删。fut.done() 判断是防御
+        ——万一 deliver_result 恰好抢先 set 过（理论上二者都在同步代码里，不会真的
+        并发，但双重保险不多花一行），避免对同一个 Future 二次 set_result 而抛异常。
+        """
+        pending, self._inflight = self._inflight, {}
+        for fut in pending.values():
+            if not fut.done():
+                fut.set_result(result)
 
     # --- 生命周期 ---------------------------------------------------------
     async def setup(self) -> DeviceResult:
