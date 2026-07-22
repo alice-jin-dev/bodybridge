@@ -1151,4 +1151,18 @@ if __name__ == "__main__":
     app.router.lifespan_context = lifespan
 
     app.add_middleware(BearerAuthMiddleware, token=TOKEN)
-    uvicorn.run(app, host=HOST, port=PORT)
+    uvicorn.run(
+        app, host=HOST, port=PORT,
+        # 第 3 层 /device 的 WebSocket 参数（第 2 步读入的配置在这里被消费）。
+        # 显式 ws="websockets-sansio"：这个实现会认 ws_ping_interval 并真的自动发
+        # 服务端 ping（keepalive），pong 超时则关连 -> 端点收到 disconnect 事件 ->
+        # finally 里 detach 立刻标 offline。不用弃用的 ws="websockets"（会打弃用警告、
+        # 且未来 uvicorn 会让那个名字悄悄改指向 sansio，等于把易变名字写死，违背铁律 6）。
+        ws="websockets-sansio",
+        ws_ping_interval=HEARTBEAT_SECONDS,   # 心跳：每 N 秒自动发协议级 ping
+        ws_max_size=MAX_PAYLOAD_BYTES,        # 载荷硬护盾，超限以 close 1009 关连
+        # ⚠️ sansio 实现忽略 ws_max_queue，退回库默认队列上限；我们靠收帧循环持续
+        # drain 保证队列不堆积，这个上界只是冗余的内存兜底，失效不影响正确性。
+        ws_max_queue=DEVICE_MAX_QUEUE,
+        # ws_ping_timeout 不传：用 uvicorn 默认（20s）——决策 Q2 定的"不单开这个旋钮"。
+    )
