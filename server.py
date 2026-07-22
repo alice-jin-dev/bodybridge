@@ -10,6 +10,8 @@ import uvicorn
 from mcp.server.fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
+from starlette.routing import WebSocketRoute
+from starlette.websockets import WebSocket
 
 import oauth_cimd
 from adapters.base import DeviceAdapter, DeviceResult, ErrorCode
@@ -386,6 +388,20 @@ async def _shutdown_device() -> None:
             f"[bodybridge] device teardown raised, ignored ({type(e).__name__}: {e}).",
             file=sys.stderr,
         )
+
+
+async def _device_endpoint(websocket: WebSocket) -> None:
+    """第 3 层设备端点（/device）。设备（ESP32 等）主动连这里持 WebSocket 长连接。
+
+    分块落地：
+      - 本块(块 2)：占位——一律拒绝（before-accept 关闭 = 握手阶段 HTTP 403）。
+      - 块 3：握手鉴权（Bearer 比对 DEVICE_TOKEN）+ 当前设备不支持直连/缺 token 时拒绝。
+      - 块 4：认证过 -> accept -> attach_connection（新踢旧，关旧连接）。
+      - 块 5：收帧循环（parse_result_frame + 记日志）+ 断开时 detach（compare-and-clear）。
+    """
+    # 占位：accept 之前直接 close，客户端在升级握手阶段收到 HTTP 403（决策 1 的
+    # before-accept 语义）。块 3 会在这之前加入"通过鉴权才 accept"的真正逻辑。
+    await websocket.close(code=1008)
 
 
 # --- OAuth 元数据端点（第 2 层 · CIMD 发现）--------------------------------
@@ -1022,6 +1038,12 @@ if __name__ == "__main__":
           file=sys.stderr)
 
     app = mcp.streamable_http_app()
+
+    # 第 3 层设备端点：始终注册；放不放行由 _device_endpoint 内部判断（当前设备是否
+    # 支持直连、DEVICE_TOKEN 是否设、Bearer 是否通过）。挂在 app.router 上、早于
+    # uvicorn.run。用 routes.append 显式挂（等价于 app.router.add_websocket_route，
+    # 这里选更直白的形式，一眼看出挂的是一条 WebSocketRoute）。
+    app.router.routes.append(WebSocketRoute("/device", _device_endpoint))
 
     # 包裹（而非替换）SDK 写死的 lifespan：在它前后插入 setup/teardown。
     # 这样两件事都跑在 uvicorn 的事件循环里，且 SDK 一行没动（桥身求薄）。
