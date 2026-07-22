@@ -390,18 +390,61 @@ async def _shutdown_device() -> None:
         )
 
 
+def _device_bearer_ok(auth_header) -> bool:
+    """校验 /device 握手的 Authorization: Bearer <token> 是否等于 DEVICE_TOKEN。
+
+    防御性处理各种坏输入（None/空/格式畸形/全角/二进制乱码）——一律返回 False，
+    绝不抛（铁律 3）。用常量时间比较（safe_compare），token 是秘密。
+    调用方保证只在 DEVICE_TOKEN 非空时才走到这里，故不会出现"空 token 匹配空 Bearer"。
+    """
+    if not auth_header:
+        return False
+    parts = auth_header.split(" ", 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return False
+    return oauth_cimd.safe_compare(parts[1].strip(), DEVICE_TOKEN)
+
+
 async def _device_endpoint(websocket: WebSocket) -> None:
     """第 3 层设备端点（/device）。设备（ESP32 等）主动连这里持 WebSocket 长连接。
 
     分块落地：
-      - 本块(块 2)：占位——一律拒绝（before-accept 关闭 = 握手阶段 HTTP 403）。
-      - 块 3：握手鉴权（Bearer 比对 DEVICE_TOKEN）+ 当前设备不支持直连/缺 token 时拒绝。
+      - 块 2：占位（已完成）。
+      - 本块(块 3)：三道拒绝闸 + 握手鉴权；通过后先占位 accept+close（块 4 换真接入）。
       - 块 4：认证过 -> accept -> attach_connection（新踢旧，关旧连接）。
       - 块 5：收帧循环（parse_result_frame + 记日志）+ 断开时 detach（compare-and-clear）。
+
+    三道闸全部 before-accept 沉默关闭（= 握手阶段 HTTP 403，不给试探者情报，
+    延续现有 token 报错策略，决策 1）。
     """
-    # 占位：accept 之前直接 close，客户端在升级握手阶段收到 HTTP 403（决策 1 的
-    # before-accept 语义）。块 3 会在这之前加入"通过鉴权才 accept"的真正逻辑。
-    await websocket.close(code=1008)
+    # 闸 1（决策 6）：当前设备适配器不支持直连（如 Mock）-> 拒绝。/device 始终注册，
+    #   但只有连接型 adapter（ESP32Adapter）放行。这条日志帮运维看懂"为什么设备连不上"。
+    if not device.supports_direct_connection:
+        print(
+            "[bodybridge] /device: refused a connection -- the active device "
+            "adapter does not support direct connections.",
+            file=sys.stderr,
+        )
+        await websocket.close(code=1008)
+        return
+
+    # 闸 2（决策 5）：DEVICE_TOKEN 未设 -> /device 禁用，拒绝一切连接（沉默；为什么
+    #   禁用已在启动日志说清，见 __main__，避免每次连接都刷屏）。
+    if not DEVICE_TOKEN:
+        await websocket.close(code=1008)
+        return
+
+    # 闸 3（决策 1）：握手鉴权。从握手请求头读 Authorization: Bearer <token>，常量
+    #   时间比对 DEVICE_TOKEN。中间件对 websocket scope 天然放行，故鉴权在此自己做。
+    if not _device_bearer_ok(websocket.headers.get("authorization")):
+        await websocket.close(code=1008)
+        return
+
+    # --- 通过三道闸。真正的 accept + 接入 + 收帧循环在块 4/5 ---
+    # 本块占位：先 accept 再立刻正常关（证明鉴权分支确实放行了）。块 4 把这两行
+    # 换成 accept -> attach_connection -> 收帧循环。
+    await websocket.accept()
+    await websocket.close(code=1000)
 
 
 # --- OAuth 元数据端点（第 2 层 · CIMD 发现）--------------------------------
@@ -1030,6 +1073,18 @@ if __name__ == "__main__":
 
     if _MAX_INFLIGHT_WARNING:  # 铁律 3/5：在途上限坏值不拒启，回退 8，但要提示
         print(_MAX_INFLIGHT_WARNING, file=sys.stderr)
+
+    # 决策 5：设备适配器支持直连、但 DEVICE_TOKEN 没设 -> /device 实际被禁用，醒目
+    # 提示 + 指路怎么启用。仅在"本该能用却因缺 token 用不了"时提示；Mock 这类不支持
+    # 直连的适配器不需要 DEVICE_TOKEN，不提示（免得误导）。
+    if device.supports_direct_connection and not DEVICE_TOKEN:
+        print(
+            "[bodybridge] warning: /device is disabled because "
+            "BODYBRIDGE_DEVICE_TOKEN is not set.\n"
+            "  The device layer is active but no device can connect until you set it.\n"
+            "  Set it (PowerShell):  $env:BODYBRIDGE_DEVICE_TOKEN = 'your-device-secret'",
+            file=sys.stderr,
+        )
 
     # 无条件打印：实际监听地址 + 端口来自哪个变量，排障第一眼就看得到（铁律 4）。
     print(f"[bodybridge] listening on {HOST}:{PORT} (port source: {_PORT_SOURCE})",
