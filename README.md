@@ -135,6 +135,15 @@ Implement three methods of `DeviceAdapter`, and your device plugs into bodybridg
 - `get_status()` — query current state
 - `list_capabilities()` — report what the device can do
 
+### Before a device connects
+
+Until a real device is connected, the three device tools return an `offline`
+result (for example, `get_status` reports that the device isn't connected).
+**This is the correct, healthy state — not an error.** It means the bridge is
+up and waiting for a device; it does not mean anything is misconfigured. Once
+your device connects to the `/device` endpoint, the tools begin reflecting its
+real state.
+
 ---
 
 ## Tech stack

@@ -210,6 +210,41 @@ Adapter authors should know it now exists:
   `adapters/base.py` (`offline` / `timeout` / `internal_error` /
   `unknown_command` / `bad_params`), with a picking guide in its docstring.
 
+## Behavior change: default adapter is now ESP32Adapter (was MockAdapter)
+
+Previous versions shipped with `MockAdapter` as the active device — a virtual
+device that always answered with fake data. This version switches the default
+to `ESP32Adapter`, the first real WebSocket device slot.
+
+- **What changed**: the three device tools no longer return fake data. They
+  now reflect the real connection state of a device on the `/device` endpoint.
+- **Before** (mock): `get_status` → "online, battery 87"; `send_command` →
+  fake success; `list_capabilities` → 3 fake capabilities.
+- **Now** (ESP32, no device connected): all three return an `offline` result
+  ("the device isn't connected to the bridge"). Note `list_capabilities` is
+  offline too — unlike the mock's static list, ESP32Adapter asks the device
+  live, so with no device there's nothing to answer.
+- The `/device` endpoint changes from "always refuses" to "accepts a device
+  connection" — provided you set `BODYBRIDGE_DEVICE_TOKEN` (see `.env.example`).
+- **`/mcp` and OAuth are completely unaffected** — this only touches the
+  device tools' return values and whether `/device` admits a connection.
+
+**What you need to do**: nothing, unless you want to connect a device. To do
+that, set `BODYBRIDGE_DEVICE_TOKEN` and flash firmware that connects to
+`/device`. If you were relying on the mock's fake "online" answers for a demo,
+see "Reverting to MockAdapter" below.
+
+### Reverting to MockAdapter
+
+There is **no environment-variable switch** for the adapter — a deliberate V1
+choice (a global mode flag would collide with the per-device routing planned
+for multi-device support, and changing that later would break backward
+compatibility). To run the mock instead, edit `server.py`: change the
+`device = ESP32Adapter(...)` line back to `device = MockAdapter()` and swap the
+import back. `adapters/mock.py` is kept in the tree precisely so this one-line
+change — and its role as a reference for third-party adapter authors — stays
+easy.
+
 ## Upgrade checklist
 
 1. Set `BODYBRIDGE_PASSWORD` — pick a long random value (see `.env.example`). The bridge will refuse to start without it.

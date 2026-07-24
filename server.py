@@ -15,7 +15,7 @@ from starlette.websockets import WebSocket
 
 import oauth_cimd
 from adapters.base import DeviceAdapter, DeviceResult, ErrorCode
-from adapters.mock import MockAdapter
+from adapters.esp32 import ESP32Adapter
 from adapters.ws_protocol import parse_result_frame
 
 # 铁律 5/6：host 默认监听所有网卡——桥的定位就是被公网访问，且鉴权已强制
@@ -297,9 +297,12 @@ def ping() -> str:
 
 
 # --- 设备 Adapter 插槽层（第 3 层）------------------------------------------
-# 桥身只依赖抽象 DeviceAdapter，不认具体设备。换真设备只改下面这一行实例化，
+# 桥身只依赖抽象 DeviceAdapter，不认具体设备。换设备只改下面这一行实例化，
 # 三个工具、_safe、整个桥身都不动 —— 这就是依赖倒置 + 桥身求薄。
-device: DeviceAdapter = MockAdapter()
+# max_inflight 显式传 MAX_INFLIGHT（BODYBRIDGE_MAX_INFLIGHT 的解析结果，见上）：
+# 不传的话 adapter 用自带默认 8、那个环境变量就白解析了。adapter 不 import
+# server（避免循环依赖），所以配置只能走构造参数注入。
+device: DeviceAdapter = ESP32Adapter(max_inflight=MAX_INFLIGHT)
 
 
 async def _safe(coro) -> dict:
