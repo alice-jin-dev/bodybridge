@@ -471,10 +471,17 @@ async def _device_endpoint(websocket: WebSocket) -> None:
                 continue
             if outcome.debug_note is not None:
                 print(f"[bodybridge] /device: {outcome.debug_note}", file=sys.stderr)
-            # 决策 4：本步只记日志、不投递。第 6 步按 outcome.frame_id 投进在途表。
-            print(f"[bodybridge] /device: received result for id={outcome.frame_id} "
-                  f"(ok={outcome.result.ok}); dispatch to in-flight table lands in step 6.",
-                  file=sys.stderr)
+            # 决策 4：按 frame_id 投进在途表，叫醒 _send_and_wait 里等这条的调用方。
+            # deliver_result 契约保证同步、永不抛（纯内存 pop + set_result），这里仍兜
+            # 一层 try/except：绝不让一次投递意外掀翻这条长命的收帧循环（铁律 3）——
+            # 兜住就记一行日志、continue，连接照活、其它命令继续收发。命中与否的可见性
+            # 由 deliver_result 自己负责（命中静默、无主时打一条带 id 的丢弃日志），
+            # 正常路径不在这里刷屏。
+            try:
+                device.deliver_result(outcome.frame_id, outcome.result)
+            except Exception as e:
+                print(f"[bodybridge] /device: deliver_result raised, ignored "
+                      f"({type(e).__name__}); connection stays up.", file=sys.stderr)
     finally:
         # 断开（设备主动断 / 网络断 / pong 超时被 uvicorn 关 / 被新连接踢）都汇到
         # 这里：compare-and-clear（决策 2/3）——只有 _connection 还是自己才清，立刻
