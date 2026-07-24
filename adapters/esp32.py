@@ -17,7 +17,12 @@ DeviceAdapter 契约，换设备＝换这个文件，桥身不动。
 契约铁律：三个方法 + setup + _send_and_wait 永不向外抛异常——做不到的事一律用
 DeviceResult(ok=False) 如实告知("小狗歪头"哲学)。
 """
+import asyncio
+import sys
+import uuid
+
 from .base import DeviceAdapter, DeviceResult, ErrorCode
+from .ws_protocol import build_cmd_frame
 
 # 保留命令名：get_status / list_capabilities 复用 cmd 帧问设备(见下方两个方法)，
 # 因此占用了设备命令空间里这两个名字。⚠️ 接入文档须写明"以下为当前保留命令名
@@ -130,27 +135,85 @@ class ESP32Adapter(DeviceAdapter):
         #    骗 Claude(违背"具身状态不返回旧数据"这条既有决策)。
         return await self._send_and_wait(CMD_LIST_CAPABILITIES, None)
 
-    # --- 发送 + 等待回执的唯一出口(第 6 步填实) --------------------------
+    # --- 发送 + 等待回执 + 投递（第 6 步接线）--------------------------------
     async def _send_and_wait(self, command: str,
                              params: dict | None) -> DeviceResult:
-        """三个方法唯一的对设备出口。永不抛异常(契约)。
+        """三个方法唯一的对设备出口。永不向外抛 Exception（契约）。
 
-        本步只完整实现"没连接"这一路：如实返回 offline。真正的发送 + 在途表 +
-        等 result 在第 6 步接线。
+        唯一放行的是 CancelledError：桥侧 deadline 由 server._safe 的 wait_for 施加，
+        超时会 cancel 本协程、在 await fut 处注入 CancelledError。它是协作式取消信号
+        （BaseException，不是 Exception），必须让它继续传播给 wait_for 转成 TIMEOUT——
+        我们只在 finally 里清表，绝不吞它。吞了 deadline 就失效了。
         """
         conn = self._connection
         if conn is None:
-            # offline = 命令【确定没到】设备，故 retryable=True(五码里唯一为真的一类)。
+            # offline = 命令【确定没到】设备，retryable=True。
             return DeviceResult.failure(
                 ErrorCode.OFFLINE,
                 "设备当前没有连接到桥，指令没发出去。",
                 retryable=True,
             )
-        # TODO(第 6 步)：生成 id -> 登记在途表(上限 MAX_INFLIGHT，超了回"太多了")
-        #   -> ws_protocol.build_cmd_frame(id, command, params) -> conn.send 发出
-        #   -> 在 deadline 内等对应 id 的 result(deadline 由 server._safe 施加)。
-        return DeviceResult.failure(
-            ErrorCode.INTERNAL_ERROR,
-            "设备发送链路尚未接线（第 6 步实现），暂不可用。",
-            retryable=False,
-        )
+
+        # 在途表已满：桥主动挡下（命令根本没发出去，同 offline 一样"确定没到"）→ BUSY。
+        # len 检查到下面存表之间【没有 await】，asyncio 单线程下这段是原子的，绝不会
+        # 两个协程同时通过检查而超额。
+        if len(self._inflight) >= self._max_inflight:
+            return DeviceResult.failure(
+                ErrorCode.BUSY,
+                "设备正忙，同时处理的命令太多了，请稍后再试。",
+                retryable=True,
+            )
+
+        frame_id = uuid.uuid4().hex
+        fut = asyncio.get_running_loop().create_future()
+
+        # ⭐【先登记再发帧 —— 顺序是并发核心，这三步不能乱】
+        #   建 fut（上一行）→ 存表（下一行）→ 发帧（下面的 send_text）。
+        #   存表是同步语句、零窗口：哪怕发帧的 await 一让出控制权 result 就回来，
+        #   deliver_result 也必能在表里 pop 到这个 fut（决策 3：窗口为零，不是减小）。
+        self._inflight[frame_id] = fut
+        try:
+            try:
+                frame = build_cmd_frame(frame_id, command, params)  # 纯函数，不让出控制权
+                await conn.send_text(frame)                          # ← 发帧（真正让出的 await）
+            except Exception:
+                # ⬅【分界点 A：send 异常 → offline】send_text 这一下就抛 = 命令【确定没
+                #    发出去】。与"已发出后才断线"（→ timeout，走 attach/detach 的断线清算，
+                #    见 _disconnect_timeout_result）泾渭分明：没发出去=offline，发出去了
+                #    但不知设备处理没=timeout。
+                return DeviceResult.failure(
+                    ErrorCode.OFFLINE,
+                    "指令没能发送到设备（连接可能刚断开），没发出去。",
+                    retryable=True,
+                )
+            # 帧已发出，等回执：deliver_result 命中→真 result；断线清算→timeout 信封；
+            # _safe 超时→在这一行被 cancel（CancelledError 放行给 wait_for）。
+            return await fut
+        finally:
+            # ⬅【三条路统一清表，且只此一处 pop】成功 return / send 异常 return /
+            #    超时 cancel 抛出 —— 都汇到这里。pop(..., None)：断线清算是【整表搬走】
+            #    （self._inflight 换成新空表），那时这里 pop 打在新表上得 None、无害，
+            #    绝不会二次清或误清——这正是块 2 _fail_all_inflight 用整表替换的用意。
+            self._inflight.pop(frame_id, None)
+
+    def deliver_result(self, frame_id: str, result: DeviceResult) -> None:
+        """收帧循环（server.py /device，块 4 接线）收到设备回的 result 时调用，把它
+        投给正在 _send_and_wait 里 await 这个 frame_id 的调用方（决策 4）。同步方法：
+        set_result 只是 schedule 那个协程恢复，无 I/O。
+
+        pop 不到（得 None）= 这条 result 无主：对应命令已超时被 finally 清走、或本就
+        没登记过这个 id（设备乱回）—— 自然实现"超时后到达的 result 一律丢弃"。丢弃时
+        记一行日志【带上 frame_id】：这正是最需要线索的场景，好一眼区分"回执来晚了"
+        （有这条日志）和"设备根本没回"（连这条都没有）。
+        """
+        fut = self._inflight.pop(frame_id, None)
+        if fut is None:
+            # 运维日志（进 server stderr、永不发 Claude）→ ASCII，防 GBK 控制台乱码。
+            safe_id = frame_id.encode("ascii", "backslashreplace").decode("ascii")
+            print(f"[bodybridge] esp32: dropped an unmatched result (id={safe_id!r}); "
+                  "its command likely already timed out.", file=sys.stderr)
+            return
+        # done() 双保险：能 pop 到就说明没被断线清算整表搬走、按理还没 set，但绝不对
+        # 已完成的 Future 二次 set_result（会抛）。
+        if not fut.done():
+            fut.set_result(result)
