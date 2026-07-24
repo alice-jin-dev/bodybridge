@@ -126,8 +126,9 @@ the **same value** you put in `secrets.h`, then restart/redeploy the bridge.
   logged to Serial and ignored, never crashes or drops the connection (this is
   what keeps V2 frame types backward-compatible).
 - **Pong**: replied automatically by the WebSocket library — no heartbeat code.
-- **Reconnect**: on disconnect the device retries with exponential backoff +
-  full jitter, so a bridge restart doesn't cause a reconnect stampede.
+- **Reconnect**: on disconnect the device retries with exponential backoff and
+  jitter (AWS full jitter, floor raised to BASE to dodge a 0-interval), so a
+  bridge restart doesn't cause a reconnect stampede.
 
 ---
 
