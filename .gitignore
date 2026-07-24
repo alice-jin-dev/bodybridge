@@ -216,3 +216,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ESP32 firmware secrets — real WiFi creds + device token, never commit.
+# Matches secrets.h anywhere in the tree; secrets.h.example (different name)
+# stays tracked as the template.
+**/secrets.h
