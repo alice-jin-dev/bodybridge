@@ -135,24 +135,27 @@ the **same value** you put in `secrets.h`, then restart/redeploy the bridge.
 ## TLS certificate verification (dev vs release)
 
 The bridge is served over HTTPS, so the device connects with `wss://` (TLS).
-With the arduinoWebSockets library the mode is chosen by *which begin call* you
-use:
+The mode is a compile-time switch — `BODYBRIDGE_TLS_INSECURE` at the top of the
+sketch:
 
-- **Development (fast, INSECURE)** — `beginSSL(host, port, path)` with no CA.
-  The device does **NOT verify** the bridge's certificate. Use only to get a
-  first connection working.
-- **Release (verified)** — `beginSslWithCA(host, port, path, ROOT_CA)`. Embed
-  the bridge's root CA; the device verifies the chain.
+- **`BODYBRIDGE_TLS_INSECURE 1` (development, fast, INSECURE)** — the sketch
+  calls `beginSSL(...)` with no CA. The device does **NOT verify** the bridge's
+  certificate. Use only to get a first connection working.
+- **`BODYBRIDGE_TLS_INSECURE 0` (release, verified — the default)** — the sketch
+  calls `beginSslWithCA(..., ROOT_CA_PEM)` against the roots embedded in the
+  sketch; the device verifies the chain.
 
-⚠️ **Do not ship the insecure begin call.** Without verification, any machine
+⚠️ **Do not ship with the switch left on `1`.** Without verification, any machine
 that can intercept your traffic can impersonate the bridge and capture your
-device token. Because this firmware is also a reference sample, the insecure
-call in the sketch is flagged with a loud in-code comment — so someone copying
-the code (who may never read this README) still gets warned.
+device token. Because this firmware is also a reference sample, leaving
+`BODYBRIDGE_TLS_INSECURE 1` triggers a compiler `#warning` on **every build** —
+so someone copying the code (who may never read this README) still gets warned.
 
 For the public bodybridge bridge (any Let's Encrypt host) the root CA is
-**ISRG Root X2** (ECDSA, valid through 2040); embedding **ISRG Root X1** (RSA)
-as well is recommended so a Let's Encrypt chain switch doesn't lock you out.
+**ISRG Root X2** (ECDSA, trusted until 2035 per Let's Encrypt; the certificate's
+own notAfter is 2040-09-17, but LE may rotate to a new root before then);
+embedding **ISRG Root X1** (RSA) as well is recommended so a Let's Encrypt chain
+switch doesn't lock you out.
 ECDSA (X2) verification is slightly slower on ESP32 than RSA — a one-time
 handshake cost.
 

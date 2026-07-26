@@ -17,6 +17,14 @@
 #include <ArduinoJson.h>          // v7.3+ required (see sendResult note)
 #include "secrets.h"             // WIFI_SSID / WIFI_PASSWORD / BODYBRIDGE_DEVICE_TOKEN / BRIDGE_*
 
+// ---- TLS security switch (⚠️ read before flashing) ----
+// 0 = verify the bridge certificate against the embedded ISRG roots (REQUIRED
+//     for release; this is the safe default). 1 = skip verification (beginSSL):
+//     handy for first bring-up, but a man-in-the-middle can then impersonate the
+//     bridge and steal BODYBRIDGE_DEVICE_TOKEN. NEVER ship with 1 — whenever it
+//     is 1 the compiler prints a #warning on every build (see startBridgeConnection).
+#define BODYBRIDGE_TLS_INSECURE 0
+
 // ---- board config ----
 #define LED_PIN 2                 // On-board LED on most classic ESP32 boards.
                                  // Wrong board? change this ONE number (README).
@@ -72,18 +80,83 @@ void connectWiFi() {
                 WiFi.localIP().toString().c_str(), WiFi.RSSI());
 }
 
+// ---- TLS trust anchors (embedded root CAs) ----
+// Two Let's Encrypt roots concatenated into ONE PEM string. On ESP32,
+// beginSslWithCA -> WiFiClientSecure.setCACert -> mbedtls_x509_crt_parse, which
+// parses multiple concatenated PEM certs from a single buffer and trusts each as
+// a root. Only the ROOT is embedded; the LE intermediate (E-series) is sent by
+// the server during the handshake. Dual-root = immune to a Let's Encrypt
+// ECDSA/RSA chain switch. Compiled only when verification is on.
+#if !BODYBRIDGE_TLS_INSECURE
+static const char ROOT_CA_PEM[] =
+    // ISRG Root X2 — ECDSA P-384. Root of the current LE ECDSA chain the public
+    // bodybridge bridge serves. notAfter 2040-09-17; Let's Encrypt may rotate
+    // operationally before ~2035 ("trusted until"). Keep in sync with:
+    //   https://letsencrypt.org/certs/isrg-root-x2.pem
+    R"EOF(-----BEGIN CERTIFICATE-----
+MIICGzCCAaGgAwIBAgIQQdKd0XLq7qeAwSxs6S+HUjAKBggqhkjOPQQDAzBPMQsw
+CQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJuZXQgU2VjdXJpdHkgUmVzZWFyY2gg
+R3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBYMjAeFw0yMDA5MDQwMDAwMDBaFw00
+MDA5MTcxNjAwMDBaME8xCzAJBgNVBAYTAlVTMSkwJwYDVQQKEyBJbnRlcm5ldCBT
+ZWN1cml0eSBSZXNlYXJjaCBHcm91cDEVMBMGA1UEAxMMSVNSRyBSb290IFgyMHYw
+EAYHKoZIzj0CAQYFK4EEACIDYgAEzZvVn4CDCuwJSvMWSj5cz3es3mcFDR0HttwW
++1qLFNvicWDEukWVEYmO6gbf9yoWHKS5xcUy4APgHoIYOIvXRdgKam7mAHf7AlF9
+ItgKbppbd9/w+kHsOdx1ymgHDB/qo0IwQDAOBgNVHQ8BAf8EBAMCAQYwDwYDVR0T
+AQH/BAUwAwEB/zAdBgNVHQ4EFgQUfEKWrt5LSDv6kviejM9ti6lyN5UwCgYIKoZI
+zj0EAwMDaAAwZQIwe3lORlCEwkSHRhtFcP9Ymd70/aTSVaYgLXTWNLxBo1BfASdW
+tL4ndQavEi51mI38AjEAi/V3bNTIZargCyzuFJ0nN6T5U6VR5CmD1/iQMVtCnwr1
+/q4AaOeMSQ+2b1tbFfLn
+-----END CERTIFICATE-----
+)EOF"
+    // ISRG Root X1 — RSA 4096. Fallback root: covers a LE switch to an
+    // X1-terminated / RSA chain so a chain change can't lock the device out.
+    // notAfter 2035-06-04. Source:
+    //   https://letsencrypt.org/certs/isrgrootx1.pem
+    R"EOF(-----BEGIN CERTIFICATE-----
+MIIFazCCA1OgAwIBAgIRAIIQz7DSQONZRGPgu2OCiwAwDQYJKoZIhvcNAQELBQAw
+TzELMAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2Vh
+cmNoIEdyb3VwMRUwEwYDVQQDEwxJU1JHIFJvb3QgWDEwHhcNMTUwNjA0MTEwNDM4
+WhcNMzUwNjA0MTEwNDM4WjBPMQswCQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJu
+ZXQgU2VjdXJpdHkgUmVzZWFyY2ggR3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBY
+MTCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoCggIBAK3oJHP0FDfzm54rVygc
+h77ct984kIxuPOZXoHj3dcKi/vVqbvYATyjb3miGbESTtrFj/RQSa78f0uoxmyF+
+0TM8ukj13Xnfs7j/EvEhmkvBioZxaUpmZmyPfjxwv60pIgbz5MDmgK7iS4+3mX6U
+A5/TR5d8mUgjU+g4rk8Kb4Mu0UlXjIB0ttov0DiNewNwIRt18jA8+o+u3dpjq+sW
+T8KOEUt+zwvo/7V3LvSye0rgTBIlDHCNAymg4VMk7BPZ7hm/ELNKjD+Jo2FR3qyH
+B5T0Y3HsLuJvW5iB4YlcNHlsdu87kGJ55tukmi8mxdAQ4Q7e2RCOFvu396j3x+UC
+B5iPNgiV5+I3lg02dZ77DnKxHZu8A/lJBdiB3QW0KtZB6awBdpUKD9jf1b0SHzUv
+KBds0pjBqAlkd25HN7rOrFleaJ1/ctaJxQZBKT5ZPt0m9STJEadao0xAH0ahmbWn
+OlFuhjuefXKnEgV4We0+UXgVCwOPjdAvBbI+e0ocS3MFEvzG6uBQE3xDk3SzynTn
+jh8BCNAw1FtxNrQHusEwMFxIt4I7mKZ9YIqioymCzLq9gwQbooMDQaHWBfEbwrbw
+qHyGO0aoSCqI3Haadr8faqU9GY/rOPNk3sgrDQoo//fb4hVC1CLQJ13hef4Y53CI
+rU7m2Ys6xt0nUW7/vGT1M0NPAgMBAAGjQjBAMA4GA1UdDwEB/wQEAwIBBjAPBgNV
+HRMBAf8EBTADAQH/MB0GA1UdDgQWBBR5tFnme7bl5AFzgAiIyBpY9umbbjANBgkq
+hkiG9w0BAQsFAAOCAgEAVR9YqbyyqFDQDLHYGmkgJykIrGF1XIpu+ILlaS/V9lZL
+ubhzEFnTIZd+50xx+7LSYK05qAvqFyFWhfFQDlnrzuBZ6brJFe+GnY+EgPbk6ZGQ
+3BebYhtF8GaV0nxvwuo77x/Py9auJ/GpsMiu/X1+mvoiBOv/2X/qkSsisRcOj/KK
+NFtY2PwByVS5uCbMiogziUwthDyC3+6WVwW6LLv3xLfHTjuCvjHIInNzktHCgKQ5
+ORAzI4JMPJ+GslWYHb4phowim57iaztXOoJwTdwJx4nLCgdNbOhdjsnvzqvHu7Ur
+TkXWStAmzOVyyghqpZXjFaH3pO3JLF+l+/+sKAIuvtd7u+Nxe5AW0wdeRlN8NwdC
+jNPElpzVmbUq4JUagEiuTDkHzsxHpFKVK7q4+63SM1N95R1NbdWhscdCb+ZAJzVc
+oyi3B43njTOQ5yOf+1CceWxG1bQVs5ZufpsMljq4Ui0/1lvh+wjChP4kqKOJ2qxq
+4RgqsahDYVvTH9w7jXbyLeiNdd8XM2w9U/t7y0Ff/9yi0GE44Za4rF2LN9d11TPA
+mRGunUHBcnWEvgJBQl9nJEiU0Zsnvgc/ubhPgXRR4Xq37Z0j4r7g1SgEEzwxA57d
+emyPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc=
+-----END CERTIFICATE-----
+)EOF";
+#endif
+
 void startBridgeConnection() {
-  // ===== TLS =====
-  // DEVELOPMENT: beginSSL() with no CA => the bridge cert is NOT verified. Fast,
-  //   but INSECURE: a man-in-the-middle can impersonate the bridge and steal
-  //   BODYBRIDGE_DEVICE_TOKEN.
-  // ⚠️⚠️ DO NOT SHIP THIS LINE. Before release, replace it with the
-  //   beginSslWithCA(...) line below and embed the bridge's root CA (Let's
-  //   Encrypt ISRG Root X2, +X1 recommended). See README > "TLS certificate
-  //   verification". This loud comment is deliberate: copiers may skip the README.
+  // ===== TLS ===== (mode chosen at compile time by BODYBRIDGE_TLS_INSECURE, top of file)
+#if BODYBRIDGE_TLS_INSECURE
+  // INSECURE: the bridge certificate is NOT verified. A man-in-the-middle can
+  // impersonate the bridge and steal BODYBRIDGE_DEVICE_TOKEN. First bring-up only.
+  #warning "BODYBRIDGE_TLS_INSECURE=1: bridge certificate NOT verified -- DO NOT SHIP. Set it to 0 before release."
   webSocket.beginSSL(BRIDGE_HOST, BRIDGE_PORT, BRIDGE_PATH);
-  //   RELEASE (swap for the line above once ROOT_CA_PEM is embedded):
-  //   webSocket.beginSslWithCA(BRIDGE_HOST, BRIDGE_PORT, BRIDGE_PATH, ROOT_CA_PEM);
+#else
+  // RELEASE: verify the bridge chain against the embedded ISRG roots (ROOT_CA_PEM).
+  webSocket.beginSslWithCA(BRIDGE_HOST, BRIDGE_PORT, BRIDGE_PATH, ROOT_CA_PEM);
+#endif
 
   // ===== handshake auth: /device requires Authorization: Bearer <token> =====
   // Adjacent string-literal concatenation (token is a #define'd literal).
