@@ -12,11 +12,18 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 from starlette.routing import WebSocketRoute
 from starlette.websockets import WebSocket
+from dotenv import load_dotenv
 
 import oauth_cimd
 from adapters.base import DeviceAdapter, DeviceResult, ErrorCode
 from adapters.esp32 import ESP32Adapter
 from adapters.ws_protocol import parse_result_frame
+
+# 本地开发便利：把同目录 .env 载入进程环境，让下面所有 os.environ.get 读得到。
+# ⚠️ 必须早于任何一次 os.environ.get（第一处就在下面读 HOST），否则白加。
+# 不传 override=True：默认「已存在的环境变量不被 .env 覆盖」，正是我们要的——
+# 平台注入的变量（Zeabur Variables 等）优先，.env 只在本地兜底，线上以平台为准。
+load_dotenv()
 
 # 铁律 5/6：host 默认监听所有网卡——桥的定位就是被公网访问，且鉴权已强制
 # （缺 TOKEN/PASSWORD 直接拒启），默认只听本机反而跟定位相反。用户显式设
