@@ -67,7 +67,86 @@ honestly instead of guessing. That refusal *is* the safety mechanism.
 
 ## Quick Start
 
-*Coming soon — pending real-device validation.*
+bodybridge is an MCP bridge: it connects embodied devices (ESP32, Raspberry
+Pi, StackChan…) to any MCP-compatible AI client. claude.ai is the primary
+path — and the only one where the AI runs on your existing subscription with
+no extra API bill (see [Deploy](#deploy)).
+
+This section gets a working bridge running on your own machine in about five
+minutes. Connecting it to an AI client comes after, under Deploy.
+
+### Prerequisites
+
+- Python 3.10+
+- [uv](https://docs.astral.sh/uv/) (`pip install uv`, or see uv's docs)
+
+### Steps
+
+```bash
+# 1. Clone
+git clone https://github.com/<your-handle>/bodybridge.git
+cd bodybridge
+
+# 2. Configure — copy the template and fill in two required secrets
+cp .env.example .env
+#    Then open .env and set both (the bridge won't start until you do):
+#
+#      BODYBRIDGE_TOKEN    — the JWT signing secret. Generate a strong one:
+#          python -c "import secrets; print(secrets.token_urlsafe(32))"
+#
+#      BODYBRIDGE_PASSWORD — the password gate for /oauth/authorize.
+#          Any non-empty string works; a strong random one is recommended
+#          (you can use the same command as above).
+#
+#    The bridge auto-loads .env on startup, so no extra flags are needed.
+
+# 3. Install dependencies
+uv sync
+
+# 4. Run
+uv run python server.py
+```
+
+If it started, you'll see:
+
+```
+[bodybridge] listening on 0.0.0.0:8000 (port source: default)
+```
+
+(You may also see warnings that `BODYBRIDGE_PUBLIC_URL` and
+`BODYBRIDGE_DEVICE_TOKEN` are not set — that's expected for a local run;
+you'll set those when you deploy and attach a device.)
+
+That's the bridge itself running. It has no device attached yet — that's
+expected. `get_status` will report `offline` until a device connects.
+
+> **Not seeing it start?** If the bridge exits immediately, you most likely
+> left `BODYBRIDGE_TOKEN` or `BODYBRIDGE_PASSWORD` empty — both are required.
+
+### Deploy
+
+For an AI client to reach your bridge, it needs to be on a public HTTPS URL.
+See [Deployment](#deployment) below for the full walkthrough — in short:
+deploy to any platform that gives you HTTPS (the project runs on Zeabur), set
+the same variables in the platform's Variables panel (not a `.env` file),
+plus `BODYBRIDGE_PUBLIC_URL` so OAuth discovery works.
+
+**With claude.ai (recommended).** Add the bridge as a custom connector in
+claude.ai. Because the AI runs on your existing claude.ai subscription, this
+path adds no per-token API bill — your device gets a brain for the price of a
+subscription you already pay for.
+
+**With other MCP clients.** The bridge speaks standard MCP, so any
+MCP-compatible client can connect to it with little or no change on the
+bridge side. (Note: only the claude.ai path is subscription-covered; other
+clients bill on their own terms.) *A per-client connection guide is coming —
+tracking the 2026-07-28 MCP spec update first.*
+
+### Bring your own device
+
+Want to connect real hardware? See [`firmware/README.md`](firmware/README.md)
+for the ESP32 reference firmware and a guide to writing your own device
+adapter.
 
 ---
 
