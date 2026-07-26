@@ -72,14 +72,14 @@ PORT, _PORT_SOURCE, _PORT_WARNING = _resolve_port()
 TOKEN = os.environ.get("BODYBRIDGE_TOKEN", "").strip()
 
 # 铁律 5：/oauth/authorize 的密码门禁，同样没有安全默认值，缺了直接拒启（与
-# TOKEN 同一先例：第 5 步接完中间件后，没密码这条 OAuth 路径就是废的，fail fast
+# TOKEN 同一先例：接完中间件后，没密码这条 OAuth 路径就是废的，fail fast
 # 比"桥能起但神秘地授权不了"诚实）。
 PASSWORD = os.environ.get("BODYBRIDGE_PASSWORD", "").strip()
 
 # 设备握手鉴权用的预置 token（第 3 层 /device 端点）。⚠️ 与 BODYBRIDGE_TOKEN 是
 # 两回事：后者现在是 JWT 签名密钥（服务端秘密，绝不能给设备），这个才是设备出示
 # 的凭证。缺失【不】在这里 fail-fast——当前 MockAdapter 没有 /device 端点、根本不
-# 需要它；"缺 token 就拒绝设备连接"的强制放到第 4 步端点里（那时才有 /device）。
+# 需要它；"缺 token 就拒绝设备连接"的强制放到端点里。
 DEVICE_TOKEN = os.environ.get("BODYBRIDGE_DEVICE_TOKEN", "").strip()
 
 # 可选：CIMD 抓取的 host 白名单。仅在 BODYBRIDGE_CLIENT_REGISTRATION=cimd 时
@@ -167,7 +167,7 @@ COMMAND_TIMEOUT_SECONDS, _COMMAND_TIMEOUT_WARNING = _resolve_command_timeout_sec
 def _resolve_heartbeat_seconds() -> tuple[float, str | None]:
     """心跳间隔：映射到 websockets 库的 ping_interval——库每隔这么多秒自动发一个
     协议级 ping。pong 超时（用库默认 ping_timeout，不单开旋钮）则库关连，桥在关连
-    回调里立刻标 offline（见第 4 步）。合理默认 25 秒（铁律 5）：没设静默用默认、
+    回调里立刻标 offline。合理默认 25 秒（铁律 5）：没设静默用默认、
     不警告；设了但坏值（非数字/<=0）才算用户明确操作出错，警告 + 回退 25（铁律 3：
     坏值绝不崩服务）。⚠️ 与 COMMAND_TIMEOUT_SECONDS 默认值都是 25 只是巧合，两个
     独立旋钮：这个是链路保活间隔，那个是单条命令的 deadline。"""
@@ -219,7 +219,7 @@ MAX_PAYLOAD_BYTES, _MAX_PAYLOAD_WARNING = _resolve_max_payload_bytes()
 
 def _resolve_max_inflight() -> tuple[int, str | None]:
     """在途命令表上限：同一时刻最多允许多少条命令在等设备回 result，超了拒绝（话术
-    是"太多了"不是"做不到"，见第 6 步）。正常同时在途只 1–2 条，默认 8 是个"小到能
+    是"太多了"不是"做不到"）。正常同时在途只 1–2 条，默认 8 是个"小到能
     一眼发现异常"的数字。合理默认（铁律 5）：没设静默用默认；坏值（非整数/<=0）警告
     + 回退（铁律 3）。"""
     raw = os.environ.get("BODYBRIDGE_MAX_INFLIGHT", "").strip()
@@ -419,16 +419,14 @@ def _device_bearer_ok(auth_header) -> bool:
 async def _device_endpoint(websocket: WebSocket) -> None:
     """第 3 层设备端点（/device）。设备（ESP32 等）主动连这里持 WebSocket 长连接。
 
-    分块落地：
-      - 块 2：占位（已完成）。
-      - 本块(块 3)：三道拒绝闸 + 握手鉴权；通过后先占位 accept+close（块 4 换真接入）。
-      - 块 4：认证过 -> accept -> attach_connection（新踢旧，关旧连接）。
-      - 块 5：收帧循环（parse_result_frame + 记日志）+ 断开时 detach（compare-and-clear）。
+    流程：三道拒绝闸 + 握手鉴权 -> accept -> attach_connection（新踢旧，关旧连接）
+    -> 收帧循环（parse_result_frame + 投进在途表叫醒调用方）-> 断开时 detach
+    （compare-and-clear）。
 
     三道闸全部 before-accept 沉默关闭（= 握手阶段 HTTP 403，不给试探者情报，
-    延续现有 token 报错策略，决策 1）。
+    延续现有 token 报错策略）。
     """
-    # 闸 1（决策 6）：当前设备适配器不支持直连（如 Mock）-> 拒绝。/device 始终注册，
+    # 闸 1：当前设备适配器不支持直连（如 Mock）-> 拒绝。/device 始终注册，
     #   但只有连接型 adapter（ESP32Adapter）放行。这条日志帮运维看懂"为什么设备连不上"。
     if not device.supports_direct_connection:
         print(
@@ -439,13 +437,13 @@ async def _device_endpoint(websocket: WebSocket) -> None:
         await websocket.close(code=1008)
         return
 
-    # 闸 2（决策 5）：DEVICE_TOKEN 未设 -> /device 禁用，拒绝一切连接（沉默；为什么
+    # 闸 2：DEVICE_TOKEN 未设 -> /device 禁用，拒绝一切连接（沉默；为什么
     #   禁用已在启动日志说清，见 __main__，避免每次连接都刷屏）。
     if not DEVICE_TOKEN:
         await websocket.close(code=1008)
         return
 
-    # 闸 3（决策 1）：握手鉴权。从握手请求头读 Authorization: Bearer <token>，常量
+    # 闸 3：握手鉴权。从握手请求头读 Authorization: Bearer <token>，常量
     #   时间比对 DEVICE_TOKEN。中间件对 websocket scope 天然放行，故鉴权在此自己做。
     if not _device_bearer_ok(websocket.headers.get("authorization")):
         await websocket.close(code=1008)
@@ -454,7 +452,7 @@ async def _device_endpoint(websocket: WebSocket) -> None:
     # --- 通过三道闸，正式接入 ---
     await websocket.accept()
 
-    # 决策 2：单连接"新踢旧"。attach 先把指针指向新连接（无 None 空窗）并返回被顶掉
+    # 单连接"新踢旧"。attach 先把指针指向新连接（无 None 空窗）并返回被顶掉
     # 的旧连接，由这里负责关闭。关旧用语义明确的应用码 4409（"被新连接取代"，仿
     # HTTP 409 Conflict）+ reason，方便固件端日志区分"我是被顶掉的，不是网络抖"。
     old = device.attach_connection(websocket)
@@ -465,8 +463,7 @@ async def _device_endpoint(websocket: WebSocket) -> None:
             pass  # 旧连接可能已在关闭中，关它失败无所谓，尽力而为，绝不抛（铁律 3）
 
     try:
-        # 收帧循环：不停收帧，解析 -> 记日志。本步（第 4 步）到"解析 + 记日志"为止，
-        # 不投递——把 result 按 id 投进在途表是第 6 步，那时才有在途表（决策 4）。
+        # 收帧循环：不停收帧，解析 -> 投进在途表叫醒调用方（见下方 deliver_result）。
         # 用低层 receive() 而非 receive_text()：亲手判 disconnect、亲手兜非文本帧，
         # 一个坏帧都不许掀翻循环（铁律 3）。
         while True:
@@ -481,7 +478,7 @@ async def _device_endpoint(websocket: WebSocket) -> None:
                 continue
             if outcome.debug_note is not None:
                 print(f"[bodybridge] /device: {outcome.debug_note}", file=sys.stderr)
-            # 决策 4：按 frame_id 投进在途表，叫醒 _send_and_wait 里等这条的调用方。
+            # 按 frame_id 投进在途表，叫醒 _send_and_wait 里等这条的调用方。
             # deliver_result 契约保证同步、永不抛（纯内存 pop + set_result），这里仍兜
             # 一层 try/except：绝不让一次投递意外掀翻这条长命的收帧循环（铁律 3）——
             # 兜住就记一行日志、continue，连接照活、其它命令继续收发。命中与否的可见性
@@ -494,7 +491,7 @@ async def _device_endpoint(websocket: WebSocket) -> None:
                       f"({type(e).__name__}); connection stays up.", file=sys.stderr)
     finally:
         # 断开（设备主动断 / 网络断 / pong 超时被 uvicorn 关 / 被新连接踢）都汇到
-        # 这里：compare-and-clear（决策 2/3）——只有 _connection 还是自己才清，立刻
+        # 这里：compare-and-clear——只有 _connection 还是自己才清，立刻
         # 标 offline。被踢的旧连接走到这时 _connection 已是新连接，不会误清它。
         device.detach_connection(websocket)
 
@@ -814,22 +811,6 @@ async def oauth_authorize(request: Request):
             headers=_AUTHORIZE_HEADERS,
         )
 
-    # 临时排障日志（定位"302 已发出但 Claude 从不来换 token"这个事故用）：
-    # 只打 state 的长度和脱敏后的首尾 8 位，绝不打全值；纯 ASCII（用
-    # backslashreplace 转义非 ASCII 字符，而不是让它们原样透出控制台）。
-    # 这条要确认的是我们目前看不到的关键事实——Claude 实际发来的 state
-    # 里到底有没有 HTML 特殊字符——查完可以删。
-    _diag_state = validated["state"] or ""
-    _diag_prefix = _diag_state[:8].encode("ascii", "backslashreplace").decode("ascii")
-    _diag_suffix = _diag_state[-8:].encode("ascii", "backslashreplace").decode("ascii")
-    _diag_has_special = any(c in _diag_state for c in "&<>\"'")
-    print(
-        f"[bodybridge] diagnostic: authorize state len={len(_diag_state)} "
-        f"prefix='{_diag_prefix}' suffix='{_diag_suffix}' "
-        f"has_html_special_chars={_diag_has_special}",
-        file=sys.stderr,
-    )
-
     code = oauth_cimd.issue_authorization_code(
         TOKEN,
         client_id=validated["client_id"],
@@ -997,8 +978,8 @@ async def oauth_token(request: Request) -> JSONResponse:
 # 因为 stateless_http，每次 MCP 调用都是独立 HTTP 请求，所以这里天然做到"每个请求
 # 都验"，而不是只在握手时验一次。
 #
-# 第 5 步（OAuth 改造收尾）：这里不再是"比对固定 BODYBRIDGE_TOKEN 字符串"，
-# 而是验第 4 步签发的 JWT——签名 + exp + aud + iss 全部显式校验（见
+# 这里不再是"比对固定 BODYBRIDGE_TOKEN 字符串"，
+# 而是验签发的 JWT——签名 + exp + aud + iss 全部显式校验（见
 # oauth_cimd.verify_access_token）。BODYBRIDGE_TOKEN 的角色也变了：不再是
 # 客户端直接出示的钥匙，而是服务器自己的 JWT 签名密钥，只在这里和签发处使用，
 # 永不出现在客户端手里（迁移细节见 MIGRATION.md）。
@@ -1060,7 +1041,7 @@ class BearerAuthMiddleware:
             return "Authorization 头格式应为 'Bearer <token>'"
         if not _verify_bearer_token(parts[1].strip()):
             # 签名错/已过期/aud 不符/iss 不符/格式畸形——统一这一句，不细分
-            # 具体原因（防信息泄露，延续第 4 步 /oauth/token 的同一策略）。
+            # 具体原因（防信息泄露，延续 /oauth/token 的同一策略）。
             return "token 无效或已过期，请重新完成 OAuth 授权（从 /oauth/authorize 开始）以获取新 token"
         return None
 
@@ -1126,7 +1107,7 @@ if __name__ == "__main__":
     if _MAX_INFLIGHT_WARNING:  # 铁律 3/5：在途上限坏值不拒启，回退 8，但要提示
         print(_MAX_INFLIGHT_WARNING, file=sys.stderr)
 
-    # 决策 5：设备适配器支持直连、但 DEVICE_TOKEN 没设 -> /device 实际被禁用，醒目
+    # 设备适配器支持直连、但 DEVICE_TOKEN 没设 -> /device 实际被禁用，醒目
     # 提示 + 指路怎么启用。仅在"本该能用却因缺 token 用不了"时提示；Mock 这类不支持
     # 直连的适配器不需要 DEVICE_TOKEN，不提示（免得误导）。
     if device.supports_direct_connection and not DEVICE_TOKEN:
@@ -1170,7 +1151,7 @@ if __name__ == "__main__":
     app.add_middleware(BearerAuthMiddleware, token=TOKEN)
     uvicorn.run(
         app, host=HOST, port=PORT,
-        # 第 3 层 /device 的 WebSocket 参数（第 2 步读入的配置在这里被消费）。
+        # 第 3 层 /device 的 WebSocket 参数（读入的配置在这里被消费）。
         # 显式 ws="websockets-sansio"：这个实现会认 ws_ping_interval 并真的自动发
         # 服务端 ping（keepalive），pong 超时则关连 -> 端点收到 disconnect 事件 ->
         # finally 里 detach 立刻标 offline。不用弃用的 ws="websockets"（会打弃用警告、
