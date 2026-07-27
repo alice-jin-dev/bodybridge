@@ -5,7 +5,7 @@ description = "Connect embodied devices to cloud AI via MCP"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "mcp[cli]>=1.28.1",
+    "mcp[cli]>=1.28.1,<2",
     "python-dotenv>=1.2.2",
     "websockets>=16.1.1",
 ]

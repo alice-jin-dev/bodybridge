@@ -63,7 +63,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "mcp", extras = ["cli"], specifier = ">=1.28.1" },
+    { name = "mcp", extras = ["cli"], specifier = ">=1.28.1,<2" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "websockets", specifier = ">=16.1.1" },
 ]
