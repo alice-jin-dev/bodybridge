@@ -192,6 +192,27 @@ returned_state = unquote(m_state.group(1)) if m_state else None
 check("state with HTML-special chars (& < > \" ') round-trips exactly",
       returned_state == STATE, f"expected {STATE!r}, got {returned_state!r}")
 
+# RFC 9207: the authorization response must carry iss, and it must equal the
+# issuer the metadata document advertises. The expected value is read from the
+# real metadata route rather than hardcoded, so the two can never drift apart
+# without this check noticing.
+m_iss = re.search(r"[?&]iss=([^&]+)", location)
+check("iss present in the authorization response redirect (RFC 9207)",
+      m_iss is not None, f"location={location!r}")
+returned_iss = unquote(m_iss.group(1)) if m_iss else None
+meta_resp = run(server.oauth_authorization_server(
+    make_get("/.well-known/oauth-authorization-server", {})))
+advertised_issuer = json.loads(meta_resp.body).get("issuer")
+check("iss in the redirect == issuer advertised by the metadata document",
+      returned_iss == advertised_issuer,
+      f"redirect iss={returned_iss!r}, metadata issuer={advertised_issuer!r}")
+# NOT COVERED: the error-redirect path (stage == "redirect_error" in
+# server._validate_authorize_request) also carries iss per RFC 9207, but no
+# scenario in this script reaches it -- the forged-client_id case below is a
+# trusted_error (400 page, no redirect at all). Both paths share the single
+# injection point in server._redirect_with, so the success case above does
+# exercise that code; only the error-response wiring is unasserted.
+
 # Forged form-body params must NOT take effect -- only the query string (the
 # one the password page was actually rendered from) is trusted.
 resp = run(server.oauth_authorize(make_post_form(

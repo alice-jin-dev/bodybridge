@@ -543,6 +543,9 @@ async def oauth_authorization_server(request: Request) -> JSONResponse:
         "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": ["none"],  # 两种模式都是公开客户端
         "scopes_supported": ["mcp"],
+        # RFC 9207：与 _redirect_with 注入 iss 必须同进同退——声明了却不发，
+        # 遵规范的客户端会拒掉授权响应，认证直接中断。
+        "authorization_response_iss_parameter_supported": True,
     }
     if CLIENT_REGISTRATION == "dcr":
         metadata["registration_endpoint"] = f"{PUBLIC_URL}/oauth/register"
@@ -662,8 +665,18 @@ def _authorize_form_html(*, client_id, client_name, redirect_uri, state,
 
 
 def _redirect_with(redirect_uri: str, params: dict) -> RedirectResponse:
-    """拼接重定向 URL；跟 OB 一样的 sep 判断写法，外加 Cache-Control: no-store
-    （OAuth 规范要求：带授权码/错误信息的响应不能被缓存）。"""
+    """/oauth/authorize 的【授权响应】重定向器——成功（code）和错误（error）
+    两条路都经过这里，不是通用的 URL 拼接工具。
+
+    自动注入 iss（RFC 9207 §2：授权响应——包括错误响应——MUST 带上授权服务器
+    标识，客户端据此确认响应来自哪个授权服务器）。取值直接复用 PUBLIC_URL，
+    与元数据文档广播的 issuer 同源，两者永远一致。用 {**params} 新建字典注入，
+    不原地改调用方传进来的 dict。
+
+    sep 判断沿用 OB 的写法（redirect_uri 自带 query 时用 & 续接）；外加
+    Cache-Control: no-store（OAuth 规范要求：带授权码/错误信息的响应不能被缓存）。
+    """
+    params = {**params, "iss": PUBLIC_URL}
     sep = "&" if "?" in redirect_uri else "?"
     query = "&".join(
         f"{k}={urlquote(str(v))}" for k, v in params.items() if v
