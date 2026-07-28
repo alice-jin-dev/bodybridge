@@ -78,17 +78,13 @@ check("timeout -> retryable is False (to/from device is unknown, not a "
       f"got retryable={result['retryable']!r}")
 check("timeout -> ok is False", result["ok"] is False,
       f"got ok={result['ok']!r}")
-check("timeout -> message does not claim the command 'failed' "
-      "(must express uncertainty, not lie)",
-      "失败" not in result["message"],
-      f"message={result['message']!r}")
-
-# Language-agnostic guard beside the one above. The "失败" check hardcodes the
-# current Chinese wording; once the release checklist's "user-facing errors ->
-# English" item lands, that check turns into an always-true no-op that silently
-# stops testing anything (same trap as the except-order comment). This keyword
-# table covers "asserting the command definitely failed" in BOTH languages, so
-# it keeps biting after the wording changes.
+# The only guard left against the timeout message claiming the command
+# definitely did not run. A second check used to sit right here, hardcoding
+# `"失败" not in message`; it was removed once the bridge's own messages went
+# English, because it had degraded into an always-true no-op that silently
+# tested nothing (same trap as the except-order comment). This keyword table
+# covers "asserting the command definitely failed" in every language the
+# message has been written in so far, so it keeps biting across rewordings.
 # ⚠️ WHEN THE MESSAGE LANGUAGE CHANGES, UPDATE THIS KEYWORD TABLE to match the
 # new wording -- otherwise this guard rots into the same silent no-op.
 _FAILURE_CLAIM_KEYWORDS = ("失败", "failed", "failure")

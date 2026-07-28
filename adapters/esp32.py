@@ -39,8 +39,9 @@ def _disconnect_timeout_result() -> DeviceResult:
     """
     return DeviceResult.failure(
         ErrorCode.TIMEOUT,
-        "设备连接已断开，这条命令可能已经执行、也可能没有，"
-        "请先查一下设备状态再决定要不要重发。",
+        "The connection to the device dropped while this command was in "
+        "flight. It may or may not have run. Check the device status before "
+        "sending it again.",
         retryable=False,
     )
 
@@ -150,7 +151,9 @@ class ESP32Adapter(DeviceAdapter):
             # offline = 命令【确定没到】设备，retryable=True。
             return DeviceResult.failure(
                 ErrorCode.OFFLINE,
-                "设备当前没有连接到桥，指令没发出去。",
+                "No device is connected to the bridge, so this command was "
+                "not sent. Check that the device is powered on and can reach "
+                "the bridge, then try again.",
                 retryable=True,
             )
 
@@ -160,7 +163,9 @@ class ESP32Adapter(DeviceAdapter):
         if len(self._inflight) >= self._max_inflight:
             return DeviceResult.failure(
                 ErrorCode.BUSY,
-                "设备正忙，同时处理的命令太多了，请稍后再试。",
+                "Too many commands are already waiting for the device, so the "
+                "bridge held this one back and did not send it. Wait for the "
+                "earlier ones to finish, then try again.",
                 retryable=True,
             )
 
@@ -183,7 +188,9 @@ class ESP32Adapter(DeviceAdapter):
                 #    但不知设备处理没=timeout。
                 return DeviceResult.failure(
                     ErrorCode.OFFLINE,
-                    "指令没能发送到设备（连接可能刚断开），没发出去。",
+                    "The command could not be sent to the device; the "
+                    "connection had most likely just dropped. Nothing left "
+                    "the bridge, so it is safe to try again.",
                     retryable=True,
                 )
             # 帧已发出，等回执：deliver_result 命中→真 result；断线清算→timeout 信封；

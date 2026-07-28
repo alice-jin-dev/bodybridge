@@ -325,14 +325,18 @@ async def _safe(coro) -> dict:
         # message 必须体现"不确定"——超时代表"到没到设备不知道"，写成"执行失败"是撒谎。
         return DeviceResult.failure(
             ErrorCode.TIMEOUT,
-            f"设备在 {COMMAND_TIMEOUT_SECONDS:g} 秒内没有响应，这条命令可能已经执行、"
-            "也可能没有，请先查一下设备状态再决定要不要重发。",
+            f"The device did not reply within {COMMAND_TIMEOUT_SECONDS:g} "
+            "seconds. The command may or may not have run. Check the device "
+            "status before sending it again.",
             retryable=False,
         ).to_dict()
     except Exception as e:
         return DeviceResult.failure(
             ErrorCode.INTERNAL_ERROR,
-            f"设备适配器内部异常，已兜底（{type(e).__name__}）。",
+            f"The device adapter raised an unexpected {type(e).__name__}, "
+            "which the bridge caught. It is not known whether the command "
+            "reached the device, so check the device status. Report this if "
+            "it keeps happening.",
             retryable=False,
         ).to_dict()
 
@@ -1108,18 +1112,24 @@ class BearerAuthMiddleware:
         ——空值、超长串、全角字符、二进制乱码、格式畸形的 JWT，一律友好拒绝，
         绝不 500（铁律 3）。"""
         if not auth_bytes:
-            return "缺少 Authorization 头，请带上 'Bearer <你的 token>'"
+            return ("No Authorization header was sent. Send one in the form: "
+                    "Authorization: Bearer <your token>.")
         try:
             auth = auth_bytes.decode("latin-1")  # ASGI 里 header 就是 latin-1，永不抛
         except Exception:
-            return "Authorization 头无法解析"
+            return ("The Authorization header could not be read as text. Send "
+                    "it as plain ASCII in the form: "
+                    "Authorization: Bearer <your token>.")
         parts = auth.split(" ", 1)
         if len(parts) != 2 or parts[0].lower() != "bearer":
-            return "Authorization 头格式应为 'Bearer <token>'"
+            return ("The Authorization header is not in the expected form. It "
+                    "must be: Authorization: Bearer <your token>.")
         if not _verify_bearer_token(parts[1].strip()):
             # 签名错/已过期/aud 不符/iss 不符/格式畸形——统一这一句，不细分
             # 具体原因（防信息泄露，延续 /oauth/token 的同一策略）。
-            return "token 无效或已过期，请重新完成 OAuth 授权（从 /oauth/authorize 开始）以获取新 token"
+            return ("This token is not valid or has expired. Complete the "
+                    "OAuth flow again, starting at /oauth/authorize, to get "
+                    "a new one.")
         return None
 
     async def __call__(self, scope, receive, send):
