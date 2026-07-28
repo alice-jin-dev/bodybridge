@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-labelledby="t">
+  <title id="t">bodybridge</title>
+  <style>
+    .ink { stroke: #1E3D33; fill: none; }
+    .inkfill { fill: #1E3D33; }
+    .echo { stroke: #B9CFC2; fill: none; }
+    @media (prefers-color-scheme: dark) {
+      .ink { stroke: #8FC3AC; }
+      .inkfill { fill: #8FC3AC; }
+      .echo { stroke: #3E6B5B; }
+    }
+    /* 用户开启「减少动态效果」时，胶囊静止停在通道中段 */
+    @media (prefers-reduced-motion: no-preference) {
+      .cap { animation: bb-pass 4s infinite; }
+      @keyframes bb-pass {
+        0%   { transform: translateX(-30px); animation-timing-function: cubic-bezier(.2,.7,.5,1); }
+        28%  { transform: translateX(-4px);  animation-timing-function: cubic-bezier(.6,0,.4,1); }
+        50%  { transform: translateX(8px);   animation-timing-function: cubic-bezier(.5,0,.8,.3); }
+        82%  { transform: translateX(30px); }
+        100% { transform: translateX(30px); }
+      }
+    }
+  </style>
+  <defs>
+    <clipPath id="shell"><path d="M11 33.3 V30 A9 9 0 0 1 28.22 26.34 A13 13 0 1 1 54 24 V33.3 Z"/></clipPath>
+    <clipPath id="win"><rect x="0" y="0" width="22" height="33.3"/><rect x="22" y="0" width="42" height="29.3"/></clipPath>
+    <clipPath id="cap"><rect x="9.4" y="32.6" width="46.2" height="6.1"/></clipPath>
+    <mask id="channel" maskUnits="userSpaceOnUse" x="0" y="0" width="64" height="64">
+      <rect x="0" y="0" width="64" height="64" fill="#fff"/>
+      <path d="M7 36 H58" stroke="#000" stroke-width="5.4" fill="none"/>
+    </mask>
+  </defs>
+  <g transform="translate(-0.6,0.3)">
+    <g mask="url(#channel)">
+      <g clip-path="url(#shell)"><g clip-path="url(#win)"><g transform="translate(2,2.6)">
+        <path class="echo" d="M11 30 A9 9 0 0 1 28.22 26.34 A13 13 0 1 1 54 24" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round"/>
+      </g></g></g>
+      <path class="ink" d="M11 30 A9 9 0 0 1 28.22 26.34 A13 13 0 1 1 54 24 V41 A3 3 0 0 1 51 44 H14 A3 3 0 0 1 11 41 Z" stroke-width="3.2" stroke-linejoin="round"/>
+      <path class="ink" d="M11 31.7 H54" stroke-width="3.2" stroke-linecap="round"/>
+      <path class="inkfill" d="M11 38.7 V41 A3 3 0 0 0 14 44 H51 A3 3 0 0 0 54 41 V38.7 Z"/>
+    </g>
+    <g clip-path="url(#cap)">
+      <rect class="cap inkfill" x="26" y="32.6" width="12" height="6.1" rx="2.7"/>
+    </g>
+  </g>
+</svg>

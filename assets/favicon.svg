@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16" role="img" aria-labelledby="t">
+  <title id="t">bodybridge</title>
+  <style>
+    .m { fill: #1E3D33; }
+    @media (prefers-color-scheme: dark) { .m { fill: #8FC3AC; } }
+  </style>
+  <path class="m" d="M2 8 V6.5 A2.5 2.5 0 0 1 6.4 4.9 A3.6 3.6 0 0 1 14 6 V8 Z"/>
+  <rect class="m" x="2" y="10" width="12" height="3" rx="1"/>
+</svg>

@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="512" height="512" role="img" aria-labelledby="t">
+  <title id="t">bodybridge</title>
+  <defs>
+    <clipPath id="shell"><path d="M11 33.3 V30 A9 9 0 0 1 28.22 26.34 A13 13 0 1 1 54 24 V33.3 Z"/></clipPath>
+    <clipPath id="win"><rect x="0" y="0" width="22" height="33.3"/><rect x="22" y="0" width="42" height="29.3"/></clipPath>
+    <mask id="channel" maskUnits="userSpaceOnUse" x="0" y="0" width="64" height="64">
+      <rect x="0" y="0" width="64" height="64" fill="#fff"/>
+      <path d="M9 35.7 H55" stroke="#000" stroke-width="4.8" fill="none"/>
+    </mask>
+  </defs>
+  <rect width="64" height="64" fill="#FFFDF9"/>
+  <g mask="url(#channel)">
+    <g transform="translate(3.2,4) scale(0.88)">
+      <g clip-path="url(#shell)"><g clip-path="url(#win)"><g transform="translate(2,2.6)">
+        <path d="M11 30 A9 9 0 0 1 28.22 26.34 A13 13 0 1 1 54 24" fill="none" stroke="#B9CFC2" stroke-width="3.6" stroke-linejoin="round" stroke-linecap="round"/>
+      </g></g></g>
+      <path d="M11 30 A9 9 0 0 1 28.22 26.34 A13 13 0 1 1 54 24 V41 A3 3 0 0 1 51 44 H14 A3 3 0 0 1 11 41 Z" fill="none" stroke="#1E3D33" stroke-width="3.6" stroke-linejoin="round"/>
+      <path d="M11 31.5 H54" stroke="#1E3D33" stroke-width="3.6" stroke-linecap="round" fill="none"/>
+      <path d="M11 38.7 V41 A3 3 0 0 0 14 44 H51 A3 3 0 0 0 54 41 V38.7 Z" fill="#1E3D33"/>
+    </g>
+  </g>
+</svg>

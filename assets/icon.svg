@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-labelledby="t">
+  <title id="t">bodybridge</title>
+  <style>
+    .ink { stroke: #1E3D33; fill: none; }
+    .inkfill { fill: #1E3D33; }
+    .echo { stroke: #B9CFC2; fill: none; }
+    @media (prefers-color-scheme: dark) {
+      .ink { stroke: #8FC3AC; }
+      .inkfill { fill: #8FC3AC; }
+      .echo { stroke: #3E6B5B; }
+    }
+  </style>
+  <defs>
+    <clipPath id="shell"><path d="M11 33.3 V30 A9 9 0 0 1 28.22 26.34 A13 13 0 1 1 54 24 V33.3 Z"/></clipPath>
+    <clipPath id="win"><rect x="0" y="0" width="22" height="33.3"/><rect x="22" y="0" width="42" height="29.3"/></clipPath>
+    <mask id="channel" maskUnits="userSpaceOnUse" x="0" y="0" width="64" height="64">
+      <rect x="0" y="0" width="64" height="64" fill="#fff"/>
+      <path d="M7 36.3 H58" stroke="#000" stroke-width="5.4" fill="none"/>
+    </mask>
+  </defs>
+  <g mask="url(#channel)">
+    <g transform="translate(-0.6,0.3)">
+      <g clip-path="url(#shell)"><g clip-path="url(#win)"><g transform="translate(2,2.6)">
+        <path class="echo" d="M11 30 A9 9 0 0 1 28.22 26.34 A13 13 0 1 1 54 24" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round"/>
+      </g></g></g>
+      <path class="ink" d="M11 30 A9 9 0 0 1 28.22 26.34 A13 13 0 1 1 54 24 V41 A3 3 0 0 1 51 44 H14 A3 3 0 0 1 11 41 Z" stroke-width="3.2" stroke-linejoin="round"/>
+      <path class="ink" d="M11 31.7 H54" stroke-width="3.2" stroke-linecap="round"/>
+      <path class="inkfill" d="M11 38.7 V41 A3 3 0 0 0 14 44 H51 A3 3 0 0 0 54 41 V38.7 Z"/>
+    </g>
+  </g>
+</svg>
