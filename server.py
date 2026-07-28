@@ -618,6 +618,63 @@ _used_code_jtis: dict[str, float] = {}
 
 _AUTHORIZE_HEADERS = {"X-Frame-Options": "DENY", "Cache-Control": "no-store"}
 
+# 密码页和错误页共用同一套样式，只写一份——两处各写一套将来必然漂开。
+# 全部内联、零外部资源：这两个页面在拿到 token 前就要显示，任何 CDN 字体/
+# 外链 CSS/外链图片都等于把授权入口的可用性交给第三方。
+_PAGE_CSS = """:root{color-scheme:light dark;
+      --ink:#1E3D33;--bg:#FFFDF9;--line:#D8D4CB;--err:#B00020}
+@media(prefers-color-scheme:dark){
+  :root{--ink:#8FC3AC;--bg:#0D1117;--line:#2A3138;--err:#FF6B6B}}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:flex;align-items:center;
+     justify-content:center;padding:1.5rem;background:var(--bg);
+     color:var(--ink);
+     font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+main{width:100%;max-width:22rem;text-align:center}
+.lockup{width:100%;max-width:11rem;height:auto;margin:0 auto}
+p{font-size:.9rem;opacity:.75;margin:1.25rem 0 1.5rem;line-height:1.5}
+input[type=password]{width:100%;min-height:44px;padding:0 .9rem;
+     font-size:1rem;color:var(--ink);background:transparent;
+     border:1px solid var(--line);border-radius:8px}
+input[type=password]:focus{outline:2px solid var(--ink);outline-offset:-1px}
+button{width:100%;min-height:44px;margin-top:.75rem;font-size:1rem;
+     color:var(--bg);background:var(--ink);border:0;border-radius:8px;
+     cursor:pointer}
+.err{color:var(--err);font-size:.85rem;margin:0 0 .5rem}
+h1{font-size:1.05rem;font-weight:500;margin:.75rem 0 0}"""
+
+# Inlined from assets/lockup-inline.svg. Keep both in sync.
+_LOCKUP_SVG = '''<svg class="lockup" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 542.3 95" version="1.1" fill="none" role="img" aria-labelledby="bbil-title">
+  <title id="bbil-title">bodybridge</title>
+  <mask id="bbil-channel" maskUnits="userSpaceOnUse" x="0" y="0" width="64" height="64">
+    <rect x="0" y="0" width="64" height="64" fill="#fff"/>
+    <path d="M8 36 H57" stroke="#000" stroke-width="5.4" fill="none"/>
+  </mask>
+  <clipPath id="bbil-shell">
+    <path d="M11 33.3 V30 A9 9 0 0 1 28.22 26.34 A13 13 0 1 1 54 24 V33.3 Z"/>
+  </clipPath>
+  <clipPath id="bbil-win">
+    <rect x="0" y="0" width="22" height="33.3"/>
+    <rect x="22" y="0" width="42" height="29.3"/>
+  </clipPath>
+  <g transform="translate(-7,0)">
+    <path d="m 34.5,73.9 q -7.2,0 -12,-3.4 -4.8,-3.5 -6.3,-9.7 l 1,-0.2 V 73 H 7.3 V 1 h 10.4 v 32.7 l -1.1,-0.3 q 1.7,-5.8 6.6,-9.1 5,-3.3 12,-3.3 6.9,0 11.9,3.3 5.1,3.3 7.8,9.2 2.8,5.9 2.8,13.8 0,8 -2.9,14 -2.9,6 -8.1,9.3 -5.2,3.3 -12.2,3.3 z m -2.2,-8.6 q 6.8,0 10.8,-4.8 4,-4.8 4,-13.2 0,-8.3 -4,-12.9 -4,-4.7 -10.9,-4.7 -6.8,0 -10.9,4.8 -4,4.7 -4,13.1 0,8.2 4,13 4.1,4.7 11,4.7 z M 89.133492,74 q -7.8,0 -13.7,-3.4 -5.9,-3.5 -9.2,-9.5 -3.3,-6.1 -3.3,-13.8 0,-7.8 3.3,-13.7 3.4,-5.9 9.2,-9.2 5.9,-3.4 13.7,-3.4 7.9,0 13.799998,3.4 5.9,3.3 9.1,9.2 3.3,5.9 3.3,13.7 0,7.7 -3.3,13.8 -3.2,6 -9.1,9.5 Q 97.033492,74 89.133492,74 Z m 0,-8.5 q 4.7,0 8.1,-2.3 3.499998,-2.3 5.499998,-6.4 2,-4.1 2,-9.6 0,-8.2 -4.4,-12.9 -4.299998,-4.8 -11.199998,-4.8 -6.8,0 -11.2,4.8 -4.3,4.8 -4.3,12.9 0,5.5 1.9,9.6 2,4.1 5.5,6.4 3.6,2.3 8.1,2.3 z M 161.16686,73 V 61.3 l 1,0.3 q -1.6,5.7 -6.6,9.1 -5,3.3 -12,3.3 -6.9,0 -12.1,-3.3 -5.1,-3.3 -8,-9.2 -2.8,-5.9 -2.8,-13.8 0,-8 2.9,-14 2.9,-6 8.1,-9.3 5.2,-3.3 12.2,-3.3 7.3,0 12,3.5 4.8,3.4 6.3,9.6 l -1.4,0.2 V 1 h 10.3 v 72 z m -15,-7.7 q 6.9,0 10.9,-4.7 4,-4.8 4,-13.2 0,-8.2 -4.1,-12.9 -4,-4.8 -10.9,-4.8 -6.8,0 -10.8,4.8 -3.9,4.7 -3.9,13.2 0,8.3 3.9,13 4,4.6 10.9,4.6 z m 41.30008,28.2 12.3,-28.1 2.1,-3.3 15.5,-40.1 h 10.8 l -30,71.5 z m 11.8,-20.5 -21.8,-51 h 11.3 l 18.5,45.9 z" fill="currentColor" aria-label="body"/>
+    <g transform="translate(233.375,11) scale(1.712707)">
+      <g transform="translate(-9.4,-9.4)">
+        <g mask="url(#bbil-channel)">
+          <g clip-path="url(#bbil-shell)"><g clip-path="url(#bbil-win)"><g transform="translate(2,2.6)">
+            <path d="M11 30 A9 9 0 0 1 28.22 26.34 A13 13 0 1 1 54 24" stroke="currentColor" stroke-opacity="0.22" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round"/>
+          </g></g></g>
+          <path d="M11 30 A9 9 0 0 1 28.22 26.34 A13 13 0 1 1 54 24 V41 A3 3 0 0 1 51 44 H14 A3 3 0 0 1 11 41 Z" stroke="currentColor" stroke-width="3.2" stroke-linejoin="round"/>
+          <path d="M11 31.7 H54" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"/>
+          <path d="M11 38.7 V41 A3 3 0 0 0 14 44 H51 A3 3 0 0 0 54 41 V38.7 Z" fill="currentColor"/>
+        </g>
+      </g>
+    </g>
+    <path d="M 325.80101,73 V 22 h 9.9 v 12.7 h 0.5 V 73 Z m 10.4,-26.6 -1.3,-12.1 q 1.8,-6.5 6.2,-9.9 4.4,-3.4 10.5,-3.4 2.3,0 3.2,0.4 v 9.8 q -0.5,-0.2 -1.4,-0.2 -0.9,-0.1 -2.2,-0.1 -7.5,0 -11.3,3.9 -3.7,3.9 -3.7,11.6 z M 361.23425,73 V 22 h 10.4 v 51 z m -0.5,-61 V 0.3 h 11.5 V 12 Z m 60.03316,61 V 61.3 l 1,0.3 q -1.6,5.7 -6.6,9.1 -5,3.3 -12,3.3 -6.9,0 -12.1,-3.3 -5.1,-3.3 -8,-9.2 -2.8,-5.9 -2.8,-13.8 0,-8 2.9,-14 2.9,-6 8.1,-9.3 5.2,-3.3 12.2,-3.3 7.3,0 12,3.5 4.8,3.4 6.3,9.6 l -1.4,0.2 V 1 h 10.3 v 72 z m -15,-7.7 q 6.9,0 10.9,-4.7 4,-4.8 4,-13.2 0,-8.2 -4.1,-12.9 -4,-4.8 -10.9,-4.8 -6.8,0 -10.8,4.8 -3.9,4.7 -3.9,13.2 0,8.3 3.9,13 4,4.6 10.9,4.6 z m 58.90009,29.2 q -9.6,0 -15.9,-4.4 -6.2,-4.3 -7.5,-11.5 h 9.8 q 1,3.3 4.4,5.2 3.5,1.9 9.3,1.9 7.5,0 11.2,-3.7 3.7,-3.7 3.7,-11 V 60 l 0.9,0.2 q -1.5,5.8 -6.5,9.2 -5,3.3 -12,3.3 -6.7,0 -11.8,-3.2 -5.1,-3.2 -7.9,-8.9 -2.8,-5.8 -2.8,-13.5 0,-7.8 2.9,-13.7 2.9,-5.9 8.1,-9.1 5.3,-3.2 12.3,-3.2 7.2,0 11.9,3.5 4.8,3.4 6.1,9.7 l -0.8,0.1 V 22 h 9.9 v 48.9 q 0,11 -6.8,17.3 -6.7,6.3 -18.5,6.3 z m 0.5,-30.2 q 6.7,0 10.7,-4.7 4.1,-4.7 4.1,-12.9 0,-8 -4.1,-12.6 -4,-4.6 -10.8,-4.6 -6.8,0 -10.8,4.7 -4,4.6 -4,12.8 0,8 4,12.7 4.1,4.6 10.9,4.6 z m 59.40008,9.7 q -7.7,0 -13.6,-3.4 -5.8,-3.4 -9.1,-9.4 -3.3,-6 -3.3,-13.8 0,-7.9 3.2,-13.8 3.3,-6 9.2,-9.3 5.9,-3.3 13.5,-3.3 7.4,0 12.8,3.2 5.5,3.1 8.4,8.7 3,5.6 3,13.3 0,1.2 -0.1,2.3 0,1 -0.2,2.1 h -42.8 v -7.8 h 35.5 l -2.6,3.1 q 0,-8.2 -3.7,-12.5 -3.7,-4.3 -10.3,-4.3 -7.1,0 -11.3,4.9 -4.1,4.8 -4.1,13.4 0,8.7 4.1,13.6 4.2,4.9 11.6,4.9 4.5,0 7.8,-1.8 3.3,-1.9 4.9,-5.5 h 9.8 q -2.5,7.2 -8.5,11.3 -5.9,4.1 -14.2,4.1 z" fill="currentColor" aria-label="ridge"/>
+  </g>
+</svg>'''
+
 
 def _esc(value) -> str:
     """所有回显到 HTML 里的用户输入/远端数据，一律转义。内联拼 HTML 就是
@@ -629,26 +686,33 @@ def _esc(value) -> str:
 def _authorize_error_page(message: str, status: int = 400) -> HTMLResponse:
     """前 4 项校验失败用这个：直接报错，绝不重定向（redirect_uri 还不可信）。"""
     body = f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>bodybridge - Authorization Error</title></head>
-<body style="font-family:sans-serif;max-width:32rem;margin:4rem auto;color:#222">
-<h2>Authorization request rejected</h2>
+<html><head><meta charset="utf-8"><title>bodybridge - Authorization Error</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<style>{_PAGE_CSS}</style></head>
+<body><main>
+<h1>Authorization request rejected</h1>
 <p>{_esc(message)}</p>
-</body></html>"""
+</main></body></html>"""
     return HTMLResponse(body, status_code=status, headers=_AUTHORIZE_HEADERS)
 
 
 def _authorize_form_html(*, client_id, client_name, redirect_uri, state,
                           code_challenge, code_challenge_method, resource,
                           error: str = "") -> str:
-    err_html = f'<p style="color:#b00020">{_esc(error)}</p>' if error else ""
+    err_html = f'<p class="err">{_esc(error)}</p>' if error else ""
     resource_field = (
         f'<input type="hidden" name="resource" value="{_esc(resource)}">'
         if resource else ""
     )
     return f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>bodybridge - Authorize</title></head>
-<body style="font-family:sans-serif;max-width:24rem;margin:4rem auto;color:#222">
-<h2>Authorize {_esc(client_name)}</h2>
+<html><head><meta charset="utf-8"><title>bodybridge - Authorize</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<style>{_PAGE_CSS}</style></head>
+<body><main>
+{_LOCKUP_SVG}
+<h1>Authorize {_esc(client_name)}</h1>
 <p>This app wants to connect to your bodybridge.</p>
 <form method="POST">
 <input type="hidden" name="client_id" value="{_esc(client_id)}">
@@ -657,11 +721,11 @@ def _authorize_form_html(*, client_id, client_name, redirect_uri, state,
 <input type="hidden" name="code_challenge" value="{_esc(code_challenge)}">
 <input type="hidden" name="code_challenge_method" value="{_esc(code_challenge_method)}">
 {resource_field}
-<input type="password" name="password" placeholder="Bridge password" autofocus>
+{err_html}
+<input type="password" name="password" placeholder="Bridge password" autocomplete="current-password" autofocus>
 <button type="submit">Authorize</button>
 </form>
-{err_html}
-</body></html>"""
+</main></body></html>"""
 
 
 def _redirect_with(redirect_uri: str, params: dict) -> RedirectResponse:
