@@ -12,7 +12,9 @@
 ## What is this
 
 bodybridge is an open-source cloud bridge that connects embodied devices
-(StackChan, Raspberry Pi, ESP32, and more) to AI through claude.ai custom connectors.
+(StackChan, Raspberry Pi, ESP32, and more) to any MCP-compatible AI client.
+claude.ai custom connectors are the primary path — and the only one where the
+AI runs on your existing subscription instead of a metered API key.
 
 Built on the open MCP protocol — any MCP-compatible AI client can connect.
 
@@ -172,10 +174,12 @@ claude.ai when adding the connector** — scheme, host, port, path, and
 trailing slash all included. A mismatch fails resource validation and the
 connection is rejected.
 
-If unset, the bridge still starts (it falls back to a local address and
-prints a warning) — but CIMD discovery can't work, so it *runs* while being
-unreachable from claude.ai. Starting successfully is not the same as being
-configured correctly.
+If unset, the bridge refuses to start (exit 1). It used to fall back to a
+local address and start anyway, which meant it could *run* while no MCP client
+could discover it or validate its tokens — starting successfully is not the
+same as being configured correctly, so that fallback is gone. A value that is
+set but malformed still falls back with a warning; only the missing case is
+fatal.
 
 On one-click deploy platforms, the domain is usually only assigned after
 deployment finishes — so the order is: deploy first, get the domain, then
@@ -192,7 +196,7 @@ don't need to set `BODYBRIDGE_HOST` or a port variable yourself.
 
 The bridge must be deployed somewhere that satisfies **both**:
 
-1. **Can reach claude.ai** — otherwise the bridge can't connect to the AI
+1. **Can reach your AI client's servers** (claude.ai, on the subscription path) — otherwise the bridge can't connect to the AI
 2. **Can be reached by your device** — otherwise your device can't connect to the bridge
 
 Please choose a region appropriate for your network environment.

@@ -19,7 +19,7 @@ They must complete an OAuth authorization flow (`/oauth/authorize` then
 | Variable | Required? | Default | What it's for |
 |---|---|---|---|
 | `BODYBRIDGE_PASSWORD` | **Yes** — the bridge refuses to start without it | none | Gates the `/oauth/authorize` consent page. This is the password *you* type when a client asks to connect. |
-| `BODYBRIDGE_PUBLIC_URL` | Practically yes, for any real (non-local) deployment | falls back to `http://<host>:<port>` with a startup warning | The bridge's public HTTPS base URL. Used in OAuth discovery metadata and must match the URL you type into Claude exactly. |
+| `BODYBRIDGE_PUBLIC_URL` | **Yes** — the bridge refuses to start without it | none (a value that *is* set but malformed still falls back with a warning) | The bridge's public HTTPS base URL. Used in OAuth discovery metadata and must match the URL you type into Claude exactly. |
 | `BODYBRIDGE_TOKEN_TTL_DAYS` | No | `7` | How many days an issued access token stays valid. There's no refresh token in V1 — once it expires, the client re-authorizes. |
 | `BODYBRIDGE_CLIENT_REGISTRATION` | No | `dcr` | `dcr` or `cimd` — how the bridge establishes client identity. See "Client registration: DCR vs CIMD" below. |
 | `BODYBRIDGE_CIMD_ALLOWLIST` | No | unset (no restriction) | Comma-separated host allowlist for CIMD client discovery. Only relevant when `BODYBRIDGE_CLIENT_REGISTRATION=cimd`. |
@@ -88,8 +88,9 @@ ever rotate it.
 The bridge now listens on all network interfaces by default, not just
 localhost. This is a deliberate reversal from earlier versions.
 
-- **Why**: the bridge is meant to be reached from the outside (by claude.ai,
-  by your device) — defaulting to local-only access worked against that.
+- **Why**: the bridge is meant to be reached from the outside (by MCP clients
+  such as claude.ai, by your device) — defaulting to local-only access worked
+  against that.
   Auth is mandatory regardless of this setting (`BODYBRIDGE_TOKEN` /
   `BODYBRIDGE_PASSWORD` both refuse to start if missing), so listening
   everywhere by default exposes a locked door, not an open one.
@@ -257,8 +258,9 @@ refuses to start (exit 1), the same way `BODYBRIDGE_TOKEN` and
   the RFC 9207 `iss` on every authorization response, are all derived from this
   one value. On a public deployment the fallback makes every one of them wrong
   at once, and the symptom is maddeningly indirect: the bridge is alive, the
-  health check passes, nothing shows up in the logs, but claude.ai either can't
-  discover the bridge at all or gets a token that fails audience validation.
+  health check passes, nothing shows up in the logs, but MCP clients — claude.ai
+  among them — either can't discover the bridge at all or get a token that fails
+  audience validation.
   The old warning was a single stderr line, easily lost in a cloud platform's
   startup output.
 - **What you need to do — public deployment**: set it to your public address,

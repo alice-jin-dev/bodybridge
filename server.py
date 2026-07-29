@@ -264,9 +264,13 @@ def _resolve_public_url() -> tuple[str, str | None]:
         return local, (
             "[bodybridge] warning: BODYBRIDGE_PUBLIC_URL is not set; "
             f"falling back to {local} for OAuth metadata.\n"
-            "  CIMD discovery from claude.ai needs a PUBLIC https base URL.\n"
-            "  Set it for real deployment: "
-            "BODYBRIDGE_PUBLIC_URL=https://bridge.example.com"
+            "  MCP clients (claude.ai among them) read that metadata to "
+            "discover and validate this bridge, so any public deployment "
+            "needs a real PUBLIC https base URL.\n"
+            "  Running server.py refuses to start without it; this fallback "
+            "only applies when the module is imported, e.g. by the check "
+            "scripts under scripts/.\n"
+            "  Set it: BODYBRIDGE_PUBLIC_URL=https://bridge.example.com"
         )
     normalized = raw.rstrip("/")
     if not (normalized.startswith("http://") or normalized.startswith("https://")):
@@ -1181,8 +1185,9 @@ if __name__ == "__main__":
         print(
             "[bodybridge] fatal: environment variable BODYBRIDGE_PUBLIC_URL is not set.\n"
             "  It is the bridge's public base URL: every OAuth metadata field, and the\n"
-            "  iss and aud of every token, is derived from it. Without it claude.ai\n"
-            "  cannot discover or validate this bridge, so startup is refused.\n"
+            "  iss and aud of every token, is derived from it. Without it MCP\n"
+            "  clients (claude.ai among them) cannot discover or validate this\n"
+            "  bridge, so startup is refused.\n"
             "  Set it (PowerShell, no trailing slash):\n"
             "    $env:BODYBRIDGE_PUBLIC_URL = 'https://your-bridge.example.com'",
             file=sys.stderr,
