@@ -221,3 +221,13 @@ __marimo__/
 # Matches secrets.h anywhere in the tree; secrets.h.example (different name)
 # stays tracked as the template.
 **/secrets.h
+
+# Scratch space for one-off scripts and experiments. Currently these live
+# outside the repo, but keep the rule so a future scratchpad/ here never
+# reaches a commit.
+scratchpad/
+
+# PlatformIO build output. This project builds with the Arduino IDE, which
+# writes to a system temp directory, so .pio/ does not appear today. The rule
+# is here for anyone who switches toolchains.
+.pio/
