@@ -289,6 +289,13 @@ def _resolve_public_url() -> tuple[str, str | None]:
 # 铁律 3/5：坏值/缺失回退本地 + 警告；/mcp 由代码拼，PUBLIC_URL 不含 /mcp、不含尾斜杠
 PUBLIC_URL, _PUBLIC_URL_WARNING = _resolve_public_url()
 
+# 用户到底有没有显式设过。回退值只对本地开发有意义——公网部署拿它当 issuer/aud
+# 必然全错，且症状极其间接（桥活着、健康检查过，但 claude.ai 连不上或 token 验不
+# 过），所以 __main__ 里据此拒启，与 TOKEN/PASSWORD 同一条腿。只管"没设"这一种；
+# 设了但格式坏（不以 http:// 或 https:// 开头）仍走 _resolve_public_url 的回退+警告，
+# 那条腿形状不变。
+_PUBLIC_URL_IS_SET = bool(os.environ.get("BODYBRIDGE_PUBLIC_URL", "").strip())
+
 mcp = FastMCP(
     "bodybridge",
     host=HOST,
@@ -1170,7 +1177,19 @@ if __name__ == "__main__":
         )
         sys.exit(1)
 
-    if _PUBLIC_URL_WARNING:  # 铁律 5：PUBLIC_URL 缺失/坏值不拒启，但要醒目提示
+    if not _PUBLIC_URL_IS_SET:
+        print(
+            "[bodybridge] fatal: environment variable BODYBRIDGE_PUBLIC_URL is not set.\n"
+            "  It is the bridge's public base URL: every OAuth metadata field, and the\n"
+            "  iss and aud of every token, is derived from it. Without it claude.ai\n"
+            "  cannot discover or validate this bridge, so startup is refused.\n"
+            "  Set it (PowerShell, no trailing slash):\n"
+            "    $env:BODYBRIDGE_PUBLIC_URL = 'https://your-bridge.example.com'",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if _PUBLIC_URL_WARNING:  # 铁律 5：PUBLIC_URL 坏值不拒启，但要醒目提示
         print(_PUBLIC_URL_WARNING, file=sys.stderr)
 
     if _TOKEN_TTL_WARNING:  # 铁律 3/5：TTL 坏值不拒启，但要醒目提示

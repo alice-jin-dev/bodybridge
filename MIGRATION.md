@@ -245,10 +245,36 @@ import back. `adapters/mock.py` is kept in the tree precisely so this one-line
 change — and its role as a reference for third-party adapter authors — stays
 easy.
 
+## `BODYBRIDGE_PUBLIC_URL` is now required
+
+Previously, leaving `BODYBRIDGE_PUBLIC_URL` unset fell back to
+`http://127.0.0.1:8000` and the bridge started with a warning on stderr. It now
+refuses to start (exit 1), the same way `BODYBRIDGE_TOKEN` and
+`BODYBRIDGE_PASSWORD` already did.
+
+- **Why**: every OAuth metadata field — `issuer`, `resource`, and the three
+  endpoint URLs — plus the `iss` and `aud` of every token the bridge signs and
+  the RFC 9207 `iss` on every authorization response, are all derived from this
+  one value. On a public deployment the fallback makes every one of them wrong
+  at once, and the symptom is maddeningly indirect: the bridge is alive, the
+  health check passes, nothing shows up in the logs, but claude.ai either can't
+  discover the bridge at all or gets a token that fails audience validation.
+  The old warning was a single stderr line, easily lost in a cloud platform's
+  startup output.
+- **What you need to do — public deployment**: set it to your public address,
+  e.g. `BODYBRIDGE_PUBLIC_URL=https://your-bridge.example.com`. No trailing
+  slash, and no `/mcp` — the bridge appends that itself.
+- **What you need to do — local development**: write the old fallback out
+  explicitly, `BODYBRIDGE_PUBLIC_URL=http://127.0.0.1:8000`. The behavior is
+  exactly what it was before; it just has to be stated now instead of assumed.
+- **Unchanged**: a value that is set but malformed (not starting with `http://`
+  or `https://`) still falls back with a warning and does **not** refuse
+  startup. Only the missing-or-empty case is fatal.
+
 ## Upgrade checklist
 
 1. Set `BODYBRIDGE_PASSWORD` — pick a long random value (see `.env.example`). The bridge will refuse to start without it.
-2. Set `BODYBRIDGE_PUBLIC_URL` if you're running this somewhere other than localhost — it must be the exact HTTPS URL you'll type into Claude.
+2. Set `BODYBRIDGE_PUBLIC_URL` — always, there is no longer a fallback. On a public deployment it must be the exact HTTPS URL you'll type into Claude; for local development set it to `http://127.0.0.1:8000`. No trailing slash and no `/mcp` — the bridge appends that itself.
 3. Leave `BODYBRIDGE_TOKEN` as-is (its value doesn't need to change; only its role did — see above).
 4. Restart the bridge.
 5. Re-add the connector in Claude (or wherever your client is configured) — it needs to go through the new OAuth flow, a previously-saved static-token config will no longer work.
