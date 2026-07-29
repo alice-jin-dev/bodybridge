@@ -11,12 +11,10 @@
 
 ## What is this
 
-bodybridge is an open-source cloud bridge that connects embodied devices
-(StackChan, Raspberry Pi, ESP32, and more) to any MCP-compatible AI client.
-claude.ai custom connectors are the primary path — and the only one where the
-AI runs on your existing subscription instead of a metered API key.
-
-Built on the open MCP protocol — any MCP-compatible AI client can connect.
+bodybridge is an open-source, self-hosted MCP bridge that lets embodied
+devices — StackChan, Raspberry Pi, ESP32, and more — be driven by an AI. Any
+MCP-compatible client can connect; through the claude.ai connector it runs on
+your existing subscription, so the brain (LLM inference) costs nothing extra.
 
 Instead of writing a separate bridge for every device, bodybridge gives you
 one bridge with a standard slot: implement three methods, and your device is in.
