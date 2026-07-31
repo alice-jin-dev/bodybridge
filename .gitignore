@@ -231,3 +231,17 @@ scratchpad/
 # writes to a system temp directory, so .pio/ does not appear today. The rule
 # is here for anyone who switches toolchains.
 .pio/
+
+# Compiled firmware images, anywhere in the tree — not just under build/.
+# The Arduino IDE's "Export Compiled Binary" writes sketch.ino.bin next to the
+# .ino file, so the build/ rule further up does not catch it. These three
+# suffixes never match the .ino source itself, which stays tracked.
+*.bin
+*.elf
+*.hex
+
+# Private keys and certificates, anywhere in the tree. Nothing in this project
+# needs one today; the rule is here so that a self-signed cert or key file
+# added later cannot be committed by accident.
+*.pem
+*.key
