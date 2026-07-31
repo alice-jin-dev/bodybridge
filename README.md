@@ -87,16 +87,20 @@ minutes. Connecting it to an AI client comes after, under Deploy.
 git clone https://github.com/<your-handle>/bodybridge.git
 cd bodybridge
 
-# 2. Configure — copy the template and fill in two required secrets
+# 2. Configure — copy the template and fill in the three required values
 cp .env.example .env
-#    Then open .env and set both (the bridge won't start until you do):
+#    Then open .env and set all three (the bridge won't start until you do):
 #
-#      BODYBRIDGE_TOKEN    — the JWT signing secret. Generate a strong one:
+#      BODYBRIDGE_TOKEN      — the JWT signing secret. Generate a strong one:
 #          python -c "import secrets; print(secrets.token_urlsafe(32))"
 #
-#      BODYBRIDGE_PASSWORD — the password gate for /oauth/authorize.
+#      BODYBRIDGE_PASSWORD   — the password gate for /oauth/authorize.
 #          Any non-empty string works; a strong random one is recommended
 #          (you can use the same command as above).
+#
+#      BODYBRIDGE_PUBLIC_URL — the bridge's public base URL. Not a secret.
+#          For a local run:  http://127.0.0.1:8000
+#          No trailing slash, no /mcp — the bridge appends that itself.
 #
 #    The bridge auto-loads .env on startup, so no extra flags are needed.
 
@@ -110,18 +114,19 @@ uv run python server.py
 If it started, you'll see:
 
 ```
-[bodybridge] listening on 0.0.0.0:8000 (port source: default)
+[bodybridge] starting on 0.0.0.0:8000 (port source: BODYBRIDGE_PORT)
 ```
 
-(You may also see warnings that `BODYBRIDGE_PUBLIC_URL` and
-`BODYBRIDGE_DEVICE_TOKEN` are not set — that's expected for a local run;
-you'll set those when you deploy and attach a device.)
+(You may also see a warning that `BODYBRIDGE_DEVICE_TOKEN` is not set — that's
+expected for a local run; the `/device` endpoint stays disabled until you set
+it, which is what you'll do when you attach a device.)
 
 That's the bridge itself running. It has no device attached yet — that's
 expected. `get_status` will report `offline` until a device connects.
 
 > **Not seeing it start?** If the bridge exits immediately, you most likely
-> left `BODYBRIDGE_TOKEN` or `BODYBRIDGE_PASSWORD` empty — both are required.
+> left `BODYBRIDGE_TOKEN`, `BODYBRIDGE_PASSWORD`, or `BODYBRIDGE_PUBLIC_URL`
+> empty — all three are required.
 
 ### Deploy
 

@@ -1231,7 +1231,7 @@ if __name__ == "__main__":
         )
 
     # 无条件打印：实际监听地址 + 端口来自哪个变量，排障第一眼就看得到（铁律 4）。
-    print(f"[bodybridge] listening on {HOST}:{PORT} (port source: {_PORT_SOURCE})",
+    print(f"[bodybridge] starting on {HOST}:{PORT} (port source: {_PORT_SOURCE})",
           file=sys.stderr)
     print(f"[bodybridge] client registration mode: {CLIENT_REGISTRATION}",
           file=sys.stderr)
