@@ -1,12 +1,13 @@
 """Regression checks for the device Adapter send-loop (layer 1, in-memory).
 
 Complements scripts/contract_check.py (DeviceResult / _safe contract) and
-scripts/oauth_flow_check.py (OAuth chain). This one drives ESP32Adapter's
+scripts/oauth_flow_check.py (OAuth chain). This one drives WebSocketAdapter's
 concurrency invariants through a FakeConnection stand-in -- register -> send_text
 -> await fut -> deliver_result wakes it -> in-flight table cleared -- covering
 offline / busy / timeout / disconnect-drain / orphan-result.
 
-Run it any time after touching adapters/esp32.py's send loop or in-flight table:
+Run it any time after touching adapters/websocket.py's send loop or in-flight
+table:
 
     python scripts/layer1_check.py
 
@@ -26,7 +27,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
 # 让脚本能 import 到项目模块（脚本在 scripts/，项目根是它的上一级）。
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from adapters.esp32 import ESP32Adapter          # noqa: E402
+from adapters.websocket import WebSocketAdapter    # noqa: E402
 from adapters.base import DeviceResult, ErrorCode  # noqa: E402
 
 
@@ -82,7 +83,7 @@ def check(name, ok, detail=""):
 
 
 async def scenario_get_status_woken():
-    adapter = ESP32Adapter(max_inflight=8)
+    adapter = WebSocketAdapter(max_inflight=8)
     adapter.attach_connection(FakeConnection(adapter, auto_reply=True))
     res = await asyncio.wait_for(adapter.get_status(), timeout=2)
     check("核心1: get_status 被回执叫醒 -> ok",
@@ -93,7 +94,7 @@ async def scenario_get_status_woken():
 
 
 async def scenario_send_command_woken():
-    adapter = ESP32Adapter(max_inflight=8)
+    adapter = WebSocketAdapter(max_inflight=8)
     fake = FakeConnection(adapter, auto_reply=True)
     adapter.attach_connection(fake)
     res = await asyncio.wait_for(
@@ -108,7 +109,7 @@ async def scenario_send_command_woken():
 
 
 async def scenario_offline_no_conn():
-    adapter = ESP32Adapter(max_inflight=8)
+    adapter = WebSocketAdapter(max_inflight=8)
     res = await asyncio.wait_for(adapter.get_status(), timeout=2)  # 未 attach
     check("分支: 没连接 -> offline (retryable=True)",
           res.error == ErrorCode.OFFLINE and res.retryable is True,
@@ -116,7 +117,7 @@ async def scenario_offline_no_conn():
 
 
 async def scenario_busy_when_full():
-    adapter = ESP32Adapter(max_inflight=1)
+    adapter = WebSocketAdapter(max_inflight=1)
     fake = FakeConnection(adapter, auto_reply=False)  # 不回，占住 slot
     adapter.attach_connection(fake)
     task = asyncio.create_task(adapter.get_status())
@@ -133,7 +134,7 @@ async def scenario_busy_when_full():
 
 
 async def scenario_send_raises_offline():
-    adapter = ESP32Adapter(max_inflight=8)
+    adapter = WebSocketAdapter(max_inflight=8)
     adapter.attach_connection(FakeConnection(adapter, raise_on_send=True))
     res = await asyncio.wait_for(adapter.get_status(), timeout=2)
     check("分支: send_text 抛 -> offline (确定没发出去)",
@@ -144,7 +145,7 @@ async def scenario_send_raises_offline():
 
 
 async def scenario_disconnect_timeout():
-    adapter = ESP32Adapter(max_inflight=8)
+    adapter = WebSocketAdapter(max_inflight=8)
     fake = FakeConnection(adapter, auto_reply=False)  # 不回
     adapter.attach_connection(fake)
     task = asyncio.create_task(adapter.get_status())
@@ -161,7 +162,7 @@ async def scenario_disconnect_timeout():
 
 
 async def scenario_orphan_result_dropped():
-    adapter = ESP32Adapter(max_inflight=8)
+    adapter = WebSocketAdapter(max_inflight=8)
     # 没有任何在途，投一个无主 result：应 pop 得 None、打一条日志、绝不崩。
     try:
         adapter.deliver_result("nonexistent-id", DeviceResult.success("late"))

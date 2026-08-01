@@ -1,18 +1,21 @@
-"""ESP32 设备 Adapter（第 3 层 · WebSocket 长连接的第一个真实设备插槽）。
+"""通用 WebSocket 设备 Adapter（第 3 层 · WebSocket 长连接的设备插槽）。
 
-设备是主动连桥的一方：ESP32 固件用 WebSocket 客户端连到 server.py 的 /device
+不含任何芯片专属逻辑：本文件管的是帧收发、在途表和兜底，对面是 ESP32、树莓派
+还是别的什么，它一概不问——只要对方说得来 ws_protocol 定义的 v=1 JSON 帧。
+参考实现的固件是 ESP32（见 firmware/），那是第一个落地样本，不是唯一支持的设备。
+
+设备是主动连桥的一方：设备用 WebSocket 客户端连到 server.py 的 /device
 端点，握手时带 Authorization: Bearer <BODYBRIDGE_DEVICE_TOKEN>。桥这侧只认抽象
 DeviceAdapter 契约，换设备＝换这个文件，桥身不动。
 
-本文件当前是【骨架】，分步落地，边界如下：
-  - 本步(第 3 步)：立起类 + 单连接状态 + setup/teardown + 三个方法的结构。
-    "没设备连着"的路径(-> offline)本步就完整、可测；"设备连着后真去对话"的
-    happy path 依赖后续步骤。
-  - 第 4 步：server.py 注册 /device 端点，握手鉴权、单连接(新踢旧)，连接建立/
-    断开时把 self._connection 塞入/清空；pong 超时库关连时也在关连路径【立刻】
-    清空(= 立刻标 offline，不撒谎)。
-  - 第 6 步：_send_and_wait 里真正生成 id、登记在途表(上限 MAX_INFLIGHT)、
-    build_cmd_frame 发出、在 deadline 内等对应 result。
+Not a skeleton: this layer is complete. Implemented here are the command send
+loop (_send_and_wait -- register the frame id, send the frame, await the
+matching result inside the bridge-side deadline), the in-flight table with its
+max_inflight ceiling, disconnect cleanup that wakes every waiting caller at
+once (_fail_all_inflight), and the offline/timeout split that decides which
+envelope a failure gets. The connection object is injected by the /device
+endpoint through attach_connection, and is only ever used through send_text
+and close -- nothing here knows what hardware is on the other end.
 
 契约铁律：三个方法 + setup + _send_and_wait 永不向外抛异常——做不到的事一律用
 DeviceResult(ok=False) 如实告知("小狗歪头"哲学)。
@@ -46,7 +49,7 @@ def _disconnect_timeout_result() -> DeviceResult:
     )
 
 
-class ESP32Adapter(DeviceAdapter):
+class WebSocketAdapter(DeviceAdapter):
     # 本 adapter 支持设备主动持长连接，端点据此放行 /device（见 server.py）。
     supports_direct_connection = True
 
@@ -217,7 +220,7 @@ class ESP32Adapter(DeviceAdapter):
         if fut is None:
             # 运维日志（进 server stderr、永不发 Claude）→ ASCII，防 GBK 控制台乱码。
             safe_id = frame_id.encode("ascii", "backslashreplace").decode("ascii")
-            print(f"[bodybridge] esp32: dropped an unmatched result (id={safe_id!r}); "
+            print(f"[bodybridge] ws: dropped an unmatched result (id={safe_id!r}); "
                   "its command likely already timed out.", file=sys.stderr)
             return
         # done() 双保险：能 pop 到就说明没被断线清算整表搬走、按理还没 set，但绝不对

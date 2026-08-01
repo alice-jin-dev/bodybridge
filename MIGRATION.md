@@ -241,7 +241,7 @@ There is **no environment-variable switch** for the adapter — a deliberate V1
 choice (a global mode flag would collide with the per-device routing planned
 for multi-device support, and changing that later would break backward
 compatibility). To run the mock instead, edit `server.py`: change the
-`device = ESP32Adapter(...)` line back to `device = MockAdapter()` and swap the
+`device = WebSocketAdapter(...)` line back to `device = MockAdapter()` and swap the
 import back. `adapters/mock.py` is kept in the tree precisely so this one-line
 change — and its role as a reference for third-party adapter authors — stays
 easy.
@@ -272,6 +272,30 @@ refuses to start (exit 1), the same way `BODYBRIDGE_TOKEN` and
 - **Unchanged**: a value that is set but malformed (not starting with `http://`
   or `https://`) still falls back with a warning and does **not** refuse
   startup. Only the missing-or-empty case is fatal.
+
+## Rename: `ESP32Adapter` is now `WebSocketAdapter`
+
+The class has been renamed, and `adapters/esp32.py` is now
+`adapters/websocket.py`. Nothing about its behaviour changed.
+
+- **Why**: the class never held any ESP32-specific logic. From its first
+  version it has done exactly one thing — speak the bridge's WebSocket frame
+  protocol, track in-flight commands, and fail safely — with no assumption
+  about what is on the other end. The old name told you about the first device
+  that used it, not about what the class is. The name now matches the code.
+- **ESP32 is still the reference firmware.** It remains the first shipped
+  sample and the one `firmware/` implements; that has not changed. What changed
+  is that the adapter no longer claims to be ESP32-only, because it never was.
+  A Raspberry Pi — or anything else that can open a WebSocket and speak the
+  `v=1` JSON frames — uses this same adapter unmodified.
+- **What you need to do**: nothing, unless your fork imports the class
+  directly. If it does, change `from adapters.esp32 import ESP32Adapter` to
+  `from adapters.websocket import WebSocketAdapter`, and any
+  `ESP32Adapter(...)` call to `WebSocketAdapter(...)`.
+- **Note on the entries above**: earlier sections of this file still say
+  `ESP32Adapter`. That is deliberate — they record what happened at the time,
+  and at that time the class really was called `ESP32Adapter`. Only
+  instructions you are meant to follow *now* have been updated to the new name.
 
 ## Upgrade checklist
 

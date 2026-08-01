@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import server  # noqa: E402
 from adapters.base import ErrorCode  # noqa: E402
-from adapters.esp32 import ESP32Adapter  # noqa: E402
+from adapters.websocket import WebSocketAdapter  # noqa: E402
 
 FAILURES = []
 
@@ -134,12 +134,12 @@ for _label, _variant in _MISMATCH:
           f"{_canon_norm!r}")
 
 
-# --- ESP32Adapter connection ownership: single-connection new-kicks-old, with
+# --- WebSocketAdapter connection ownership: single-connection new-kicks-old, with
 # compare-and-clear so a kicked-old connection's later teardown does NOT wipe the
 # freshly-attached new connection. Pure in-memory identity swaps, no network.
 # conn_a / conn_b are plain sentinels -- attach/detach only compare with `is`.
 
-_esp = ESP32Adapter()
+_esp = WebSocketAdapter()
 _conn_a = object()
 _conn_b = object()
 

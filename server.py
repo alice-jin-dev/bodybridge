@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 
 import oauth_cimd
 from adapters.base import DeviceAdapter, DeviceResult, ErrorCode
-from adapters.esp32 import ESP32Adapter
+from adapters.websocket import WebSocketAdapter
 from adapters.ws_protocol import parse_result_frame
 
 # 本地开发便利：把同目录 .env 载入进程环境，让下面所有 os.environ.get 读得到。
@@ -320,7 +320,7 @@ def ping() -> str:
 # max_inflight 显式传 MAX_INFLIGHT（BODYBRIDGE_MAX_INFLIGHT 的解析结果，见上）：
 # 不传的话 adapter 用自带默认 8、那个环境变量就白解析了。adapter 不 import
 # server（避免循环依赖），所以配置只能走构造参数注入。
-device: DeviceAdapter = ESP32Adapter(max_inflight=MAX_INFLIGHT)
+device: DeviceAdapter = WebSocketAdapter(max_inflight=MAX_INFLIGHT)
 
 
 async def _safe(coro) -> dict:
@@ -432,7 +432,7 @@ def _device_bearer_ok(auth_header) -> bool:
 
 
 async def _device_endpoint(websocket: WebSocket) -> None:
-    """第 3 层设备端点（/device）。设备（ESP32 等）主动连这里持 WebSocket 长连接。
+    """第 3 层设备端点（/device）。设备主动连这里持 WebSocket 长连接。
 
     流程：三道拒绝闸 + 握手鉴权 -> accept -> attach_connection（新踢旧，关旧连接）
     -> 收帧循环（parse_result_frame + 投进在途表叫醒调用方）-> 断开时 detach
@@ -442,7 +442,7 @@ async def _device_endpoint(websocket: WebSocket) -> None:
     延续现有 token 报错策略）。
     """
     # 闸 1：当前设备适配器不支持直连（如 Mock）-> 拒绝。/device 始终注册，
-    #   但只有连接型 adapter（ESP32Adapter）放行。这条日志帮运维看懂"为什么设备连不上"。
+    #   但只有连接型 adapter（WebSocketAdapter）放行。这条日志帮运维看懂"为什么设备连不上"。
     if not device.supports_direct_connection:
         print(
             "[bodybridge] /device: refused a connection -- the active device "
