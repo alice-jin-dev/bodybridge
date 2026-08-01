@@ -62,6 +62,13 @@ therefore includes the security of the adapter you run: a device that can only
 toggle an LED is very different from one that can act on a general-purpose
 system. Choose and audit your adapter accordingly.
 
+Device messages (the `message` field of a result) are passed through to the
+MCP client unchanged. This is standard for MCP servers: the protocol places
+the data-versus-instruction trust boundary at the client, not at the bridge,
+and the bridge does not inspect or filter message text. If you connect a
+device whose firmware you do not control, treat its messages as untrusted
+content — the same as any text entering a model's context.
+
 ## Coordinated Disclosure
 
 Once a report is received, I will investigate, prepare a fix, release a new
