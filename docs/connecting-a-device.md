@@ -141,15 +141,23 @@ bridge's `BODYBRIDGE_DEVICE_TOKEN` and the value on the device.
 different jobs — mixing them up is the single most common misconfiguration.
 See the comparison table in [Configuration](configuration.md).
 
-**Why this is hard to spot:** a refused handshake is closed silently, on
-purpose — a prober learns nothing about why. The cost is that you learn
-nothing either. Neither side prints a reason. So work by elimination:
+**Look at the bridge's log first.** A refused handshake tells the *device*
+nothing: it gets an HTTP 403 while still shaking hands, with no reason
+attached. That silence is deliberate — someone probing your bridge learns
+nothing from it. But the bridge writes the reason on its own side, where only
+you can read it:
+
+```
+[bodybridge] /device: refused a connection -- BODYBRIDGE_DEVICE_TOKEN is not set, so the device endpoint is disabled.
+[bodybridge] /device: refused a connection -- the Authorization header did not carry a valid device token.
+```
 
 | What you see | What it means |
 |---|---|
-| Bridge startup warns `/device` is disabled | The bridge has no `BODYBRIDGE_DEVICE_TOKEN`. Set it and restart. |
-| Device connects, then drops immediately | Handshake refused — the tokens don't match. |
-| Device never reaches the bridge (DNS, TLS, timeout) | Not a token problem. Check the host address and the network. |
+| Bridge log: `BODYBRIDGE_DEVICE_TOKEN is not set` | The bridge has no token, so `/device` is off. Set it and restart. |
+| Bridge log: `did not carry a valid device token` | The device reached the bridge, but its token doesn't match — or it sent no `Authorization` header at all. The bridge won't tell you which; that's on purpose. |
+| Device reports HTTP 403 on the handshake | The device's view of either row above. The bridge log says which. |
+| Nothing in the bridge log, and the device reports DNS, TLS or timeout errors | The device never reached the bridge. A network or address problem, not a token problem. |
 | Connected, but commands time out | The connection is fine; your `result` frames are being ignored. Re-check the [four hard requirements](#the-minimum-contract). |
 
 When the tokens don't match, re-set **both** sides from a freshly generated
