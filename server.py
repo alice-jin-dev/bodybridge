@@ -452,15 +452,31 @@ async def _device_endpoint(websocket: WebSocket) -> None:
         await websocket.close(code=1008)
         return
 
-    # 闸 2：DEVICE_TOKEN 未设 -> /device 禁用，拒绝一切连接（沉默；为什么
-    #   禁用已在启动日志说清，见 __main__，避免每次连接都刷屏）。
+    # 闸 2：DEVICE_TOKEN 未设 -> /device 禁用，拒绝一切连接。每次拒绝记一行
+    #   服务器端日志（不含 token）。启动日志（见 __main__）仍然保留，但它只说
+    #   一次、云平台日志滚动后就翻不到了；把线索留在拒绝发生的当下，部署者事后
+    #   查"设备为什么连不上"才有据可查。对设备侧依旧是静默 1008，一个字不多给。
     if not DEVICE_TOKEN:
+        print(
+            "[bodybridge] /device: refused a connection -- "
+            "BODYBRIDGE_DEVICE_TOKEN is not set, so the device endpoint "
+            "is disabled.",
+            file=sys.stderr,
+        )
         await websocket.close(code=1008)
         return
 
     # 闸 3：握手鉴权。从握手请求头读 Authorization: Bearer <token>，常量
     #   时间比对 DEVICE_TOKEN。中间件对 websocket scope 天然放行，故鉴权在此自己做。
     if not _device_bearer_ok(websocket.headers.get("authorization")):
+        # 认证失败必须在服务器端留痕（OWASP A09），但只记"被拒了"这个事实：
+        # 不含 token 字符/长度、不回显请求头，也【不区分】缺头 / 格式错 / 值不对
+        # —— 区分等于把"你差在哪一步"告诉试探者。设备侧仍是静默 1008。
+        print(
+            "[bodybridge] /device: refused a connection -- the Authorization "
+            "header did not carry a valid device token.",
+            file=sys.stderr,
+        )
         await websocket.close(code=1008)
         return
 
