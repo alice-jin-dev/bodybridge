@@ -149,9 +149,13 @@ tracking the 2026-07-28 MCP spec update first.*
 
 ### Bring your own device
 
-Want to connect real hardware? See [`firmware/README.md`](firmware/README.md)
-for the ESP32 reference firmware and a guide to writing your own device
-adapter.
+Want to connect real hardware? See
+[Connecting a device](docs/connecting-a-device.md). You don't write an
+adapter and you don't download anything — your device just speaks the
+bridge's protocol. On an ESP32 that's five steps to a blinking LED.
+
+Already have an ESP32 and just want the firmware? Go straight to the
+[firmware guide](firmware/README.md).
 
 ---
 
@@ -213,13 +217,18 @@ Please choose a region appropriate for your network environment.
 
 ## Bring your own device
 
-*Adapter guide coming soon.*
+Any device you can program — ESP32, Raspberry Pi, anything that can run a
+WebSocket client — connects by speaking the bridge's protocol. You don't write
+an adapter and you don't download anything: the generic WebSocket adapter
+already ships inside the bridge.
 
-Implement three methods of `DeviceAdapter`, and your device plugs into bodybridge:
+**→ [Connecting a device](docs/connecting-a-device.md)** — the five-step ESP32
+path, the minimum contract for any other device, and what to check when it
+won't connect.
 
-- `send_command(command, params)` — send one explicit command
-- `get_status()` — query current state
-- `list_capabilities()` — report what the device can do
+Writing an adapter is a different job, and only for devices that can't run a
+WebSocket client at all — a finished commercial product, or hardware that
+speaks its own protocol. That guide is planned.
 
 ### Before a device connects
 
