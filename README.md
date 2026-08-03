@@ -131,10 +131,10 @@ expected. `get_status` will report `offline` until a device connects.
 ### Deploy
 
 For an AI client to reach your bridge, it needs to be on a public HTTPS URL.
-See [Deployment](#deployment) below for the full walkthrough — in short:
-deploy to any platform that gives you HTTPS (the project runs on Zeabur), set
-the same variables in the platform's Variables panel (not a `.env` file),
-plus `BODYBRIDGE_PUBLIC_URL` so OAuth discovery works.
+In short: deploy to any platform that gives you HTTPS (the project runs on
+Zeabur), set the same variables in the platform's Variables panel (not a `.env`
+file), plus `BODYBRIDGE_PUBLIC_URL` so OAuth discovery works. The full
+walkthrough is in [Deployment](docs/deployment.md).
 
 **With claude.ai (recommended).** Add the bridge as a custom connector in
 claude.ai. Because the AI runs on your existing claude.ai subscription, this
@@ -165,53 +165,26 @@ Already have an ESP32 and just want the firmware? Go straight to the
 > token to OAuth 2.1 in this version. See [MIGRATION.md](MIGRATION.md) for
 > what's different and what you need to do.
 
-### ⚠️ Public HTTPS address required
+**The bridge has to run on a cloud host that is publicly reachable over
+HTTPS.** A client's servers — Anthropic's, on the claude.ai path — perform
+OAuth discovery against the bridge from the outside, and custom connectors
+require a certificate a public client will trust. A self-signed cert or a
+LAN-only address will not do. Which host you use is up to you; the bridge is
+not tied to any platform.
 
-claude.ai's custom connectors require a trusted SSL certificate — self-signed
-certs don't work — and the CIMD discovery flow needs Anthropic's servers to
-reach this bridge from the outside. So before connecting to claude.ai, you
-need a real, publicly reachable HTTPS address for the bridge.
+The shortest path: deploy to a host that gives you HTTPS, set the three
+required variables in its variables panel, then set `BODYBRIDGE_PUBLIC_URL` to
+the domain it assigned you and restart. Most platforms only hand out that
+domain after the first deploy, so expect to start the bridge twice.
 
-Set `BODYBRIDGE_PUBLIC_URL` to that address: scheme + host (+ port), no
-trailing slash, no `/mcp` path (the code appends that itself). Example:
-`BODYBRIDGE_PUBLIC_URL=https://bridge.example.com`.
+**`BODYBRIDGE_PUBLIC_URL` must match, character for character, the URL you type
+into your MCP client when adding the connector.** A mismatch fails resource
+validation and the connection is rejected — while the bridge keeps running and
+logging nothing unusual. Write it with no trailing slash and no `/mcp` path.
 
-**This value must match, character for character, the URL you type into
-claude.ai when adding the connector** — scheme, host, port, path, and
-trailing slash all included. A mismatch fails resource validation and the
-connection is rejected.
-
-If unset, the bridge refuses to start (exit 1). It used to fall back to a
-local address and start anyway, which meant it could *run* while no MCP client
-could discover it or validate its tokens — starting successfully is not the
-same as being configured correctly, so that fallback is gone. A value that is
-set but malformed still falls back with a warning; only the missing case is
-fatal.
-
-On one-click deploy platforms, the domain is usually only assigned after
-deployment finishes — so the order is: deploy first, get the domain, then
-set `BODYBRIDGE_PUBLIC_URL` and restart.
-
-### Port and network binding
-
-The bridge listens on all interfaces (`0.0.0.0`) by default, and picks up
-most cloud platforms' injected `PORT` variable automatically (falling back
-to `BODYBRIDGE_PORT`, then `8000` if neither is set) — on most platforms you
-don't need to set `BODYBRIDGE_HOST` or a port variable yourself.
-
-### ⚠️ Choosing a deployment region
-
-The bridge must be deployed somewhere that satisfies **both**:
-
-1. **Can reach your AI client's servers** (claude.ai, on the subscription path) — otherwise the bridge can't connect to the AI
-2. **Can be reached by your device** — otherwise your device can't connect to the bridge
-
-Please choose a region appropriate for your network environment.
-
-### Network quality
-
-- **V1 (motion control)** — Latency-tolerant. Most networks are fine.
-- **V2 (voice, planned)** — Real-time voice is latency-sensitive. Network quality directly affects the experience.
+**→ [Deployment](docs/deployment.md)** — the full walkthrough: what to require
+of a host, a worked example, three read-only checks that tell you it worked,
+and what each failure mode looks like.
 
 ---
 

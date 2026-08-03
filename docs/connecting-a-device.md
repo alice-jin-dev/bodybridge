@@ -21,7 +21,7 @@ you need to do.
 ## What you need
 
 1. **A deployed bridge on a public HTTPS address.** See
-   [Deployment](../README.md#deployment). Plain `http://` will not do.
+   [Deployment](deployment.md). Plain `http://` will not do.
 2. **`BODYBRIDGE_DEVICE_TOKEN` set on the bridge.** Until it is set, `/device`
    is disabled and every device is refused. See
    [Configuration](configuration.md#bodybridge_device_token).
