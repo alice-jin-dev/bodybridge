@@ -48,20 +48,16 @@ honestly instead of guessing. That refusal *is* the safety mechanism.
 
 ---
 
-## Which version should I use?
+## What V1 does
 
-| | **V1 (current)** | **V2 (planned)** |
-|---|---|---|
-| What it does | Motion control (turn, light up, move…) | Everything in V1 + streaming interaction (voice first) |
-| Interaction | Request-response | Request-response + streaming |
-| Required config | **2 items** (token + password), +1 for public deployment (public URL) | Several (token + storage + voice service credentials) |
-| External dependencies | **None** | Likely additional services |
+| | **V1** |
+|---|---|
+| What it does | Motion control (turn, light up, move…) |
+| Interaction | Request-response |
+| Required config | **3 items** (token, password, public URL) — all mandatory; the bridge won't start without them |
+| External dependencies | **None** |
 
-**Choose V1 if** you just want the AI to control device actions — minimal, readable, stable, zero dependencies.
-**Wait for V2 if** you need real-time voice conversation, or other streaming scenarios (video, sensor feeds).
-
-> Each version is a complete, standalone release.
-> More features isn't always better — for those who don't need them, they're just weight.
+V1 lets the AI control device actions — minimal, readable, stable, zero dependencies.
 
 ---
 
@@ -221,6 +217,8 @@ real state.
 - Transport: streamable-http, stateless by default
 
 Architecturally a thin core with a plugin slot — the microkernel pattern.
+
+> More features isn't always better — for those who don't need them, they're just weight.
 
 ---
 

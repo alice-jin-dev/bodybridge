@@ -238,13 +238,12 @@ see "Reverting to MockAdapter" below.
 ### Reverting to MockAdapter
 
 There is **no environment-variable switch** for the adapter — a deliberate V1
-choice (a global mode flag would collide with the per-device routing planned
-for multi-device support, and changing that later would break backward
-compatibility). To run the mock instead, edit `server.py`: change the
-`device = WebSocketAdapter(...)` line back to `device = MockAdapter()` and swap the
-import back. `adapters/mock.py` is kept in the tree precisely so this one-line
-change — and its role as a reference for third-party adapter authors — stays
-easy.
+choice: adding one would mean committing to that variable's name and semantics
+forever, and V1 does not need it. To run the mock instead, edit `server.py`:
+change the `device = WebSocketAdapter(...)` line back to `device = MockAdapter()`
+and swap the import back. `adapters/mock.py` is kept in the tree precisely so
+this one-line change — and its role as a reference for third-party adapter
+authors — stays easy.
 
 ## `BODYBRIDGE_PUBLIC_URL` is now required
 
