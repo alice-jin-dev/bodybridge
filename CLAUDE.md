@@ -2,13 +2,18 @@
 
 ## 这是什么
 让具身设备（StackChan / 树莓派 / ESP32 等）经 claude.ai 自定义连接器接入 AI 的开源云端桥。
-StackChan 是第一个落地样本。核心价值：零 API 费、零电脑依赖、全私有。
+V1 的落地样本是 ESP32 基础学习套件（firmware/ 下只有 esp32-bodybridge）；StackChan（小智固件）
+是 V2 的样本，不是 V1 要接的设备。核心价值：零 API 费、零电脑依赖、全私有。
 
 ## 四层架构
 1. MCP Server 层：streamable-http 对外暴露，声明工具清单，接住 Claude 的工具调用。
-2. Auth 鉴权守门层：V1 用 Token（不用 OAuth），密钥全走环境变量，绝不写死。
+2. Auth 鉴权守门层：完整 OAuth 2.1 —— DCR 无状态注册 + PKCE + JWT 签发 + 中间件逐请求验 JWT。
+   密钥全走环境变量，绝不写死。
+   注：最初设计为静态 Token（理由：一人部署一份，不是多用户平台）；后因 claude.ai 自定义
+   连接器只认 OAuth 入口、不接受静态 token，V1 落地为 OAuth 2.1。详见 MIGRATION.md。
 3. 设备 Adapter 插槽层（核心）：标准接口 send_command / get_status / list_capabilities。
-   StackChan（WebSocket）是它的一个实例。换设备＝实现同一接口，桥身不动。
+   当前实例是 WebSocketAdapter（adapters/websocket.py）；ESP32 参考固件是第一台用它的设备。
+   换设备＝实现同一接口，桥身不动。
    架构理念：依赖倒置 / 适配器模式，把变化关进插槽。
 4. Reflex 脊髓反射层（可选）：设备端即时反应，不阻塞 V1。
 
