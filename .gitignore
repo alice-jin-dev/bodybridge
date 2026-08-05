@@ -149,6 +149,11 @@ activemq-data/
 
 # Environments
 .env
+# Per-environment variants (.env.local, .env.production, ...) hold real values
+# exactly the way .env does, but the bare `.env` rule above does not match them.
+# The committed template is the one exception and stays tracked.
+.env.*
+!.env.example
 .envrc
 .venv
 env/
@@ -245,3 +250,9 @@ scratchpad/
 # added later cannot be committed by accident.
 *.pem
 *.key
+# SSH private keys carry no extension, so the two rules above miss them. These
+# match at any depth. The .pub counterparts are public and deliberately absent.
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
