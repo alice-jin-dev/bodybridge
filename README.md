@@ -140,8 +140,7 @@ subscription you already pay for.
 **With other MCP clients.** The bridge speaks standard MCP, so any
 MCP-compatible client can connect to it with little or no change on the
 bridge side. (Note: only the claude.ai path is subscription-covered; other
-clients bill on their own terms.) *A per-client connection guide is coming —
-tracking the 2026-07-28 MCP spec update first.*
+clients bill on their own terms.)
 
 ### Bring your own device
 
