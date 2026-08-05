@@ -310,7 +310,7 @@ mcp = FastMCP(
 
 @mcp.tool()
 def ping() -> str:
-    """健康检查：确认 bodybridge 桥活着。"""
+    """Health check: confirm the bodybridge bridge is alive."""
     return "pong"
 
 
@@ -354,19 +354,19 @@ async def _safe(coro) -> dict:
 
 @mcp.tool()
 async def device_list_capabilities() -> dict:
-    """列出设备支持的指令清单（send_command 能用哪些 command）。"""
+    """List the commands the device supports (which command values send_command accepts)."""
     return await _safe(device.list_capabilities())
 
 
 @mcp.tool()
 async def device_get_status() -> dict:
-    """查询设备当前状态。"""
+    """Query the device's current status."""
     return await _safe(device.get_status())
 
 
 @mcp.tool()
 async def device_send_command(command: str, params: dict | None = None) -> dict:
-    """向设备发送一个指令；command 见 device_list_capabilities。"""
+    """Send one command to the device; for command values see device_list_capabilities."""
     return await _safe(device.send_command(command, params))
 
 
@@ -862,7 +862,9 @@ def _validate_authorize_request(params: dict):
         "state": params.get("state", ""),
         "code_challenge": code_challenge,
         "code_challenge_method": "S256",
-        # resource 存在则记录（供未来 token 端点做 audience 绑定），缺失不拒绝。
+        # Record `resource` when present: the token endpoint checks it against
+        # this bridge's own resource and rejects a mismatch (invalid_target).
+        # Missing is not rejected.
         "resource": params.get("resource") or None,
     }
 
