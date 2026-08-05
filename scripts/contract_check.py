@@ -143,27 +143,27 @@ _esp = WebSocketAdapter()
 _conn_a = object()
 _conn_b = object()
 
-check("esp32 attach A (no prior connection) -> returns None",
+check("WebSocketAdapter attach A (no prior connection) -> returns None",
       _esp.attach_connection(_conn_a) is None)
-check("esp32 attach A -> _connection is now A",
+check("WebSocketAdapter attach A -> _connection is now A",
       _esp._connection is _conn_a)
 
 _old = _esp.attach_connection(_conn_b)
-check("esp32 attach B (A present) -> returns the kicked-old A",
+check("WebSocketAdapter attach B (A present) -> returns the kicked-old A",
       _old is _conn_a,
       f"got {_old!r}")
-check("esp32 attach B -> _connection is now B",
+check("WebSocketAdapter attach B -> _connection is now B",
       _esp._connection is _conn_b)
 
 # A was already kicked; A's later teardown must NOT wipe the current connection B:
 _esp.detach_connection(_conn_a)
-check("esp32 detach A (already kicked) -> compare-and-clear leaves _connection as B "
+check("WebSocketAdapter detach A (already kicked) -> compare-and-clear leaves _connection as B "
       "(no friendly-fire on the new connection)",
       _esp._connection is _conn_b)
 
 # B is the current connection; detaching it really clears:
 _esp.detach_connection(_conn_b)
-check("esp32 detach B (current) -> _connection cleared to None",
+check("WebSocketAdapter detach B (current) -> _connection cleared to None",
       _esp._connection is None)
 
 

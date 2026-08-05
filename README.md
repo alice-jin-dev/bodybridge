@@ -80,7 +80,7 @@ minutes. Connecting it to an AI client comes after, under Deploy.
 
 ```bash
 # 1. Clone
-git clone https://github.com/<your-handle>/bodybridge.git
+git clone https://github.com/alice-jin-dev/bodybridge.git
 cd bodybridge
 
 # 2. Configure — copy the template and fill in the three required values
