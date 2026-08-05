@@ -213,6 +213,7 @@ real state.
 
 - Python 3.10+
 - [MCP official SDK](https://github.com/modelcontextprotocol/python-sdk) (FastMCP)
+- MCP specification: 2025-11-25
 - Transport: streamable-http, stateless by default
 
 Architecturally a thin core with a plugin slot — the microkernel pattern.
