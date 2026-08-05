@@ -196,7 +196,7 @@ won't connect.
 
 Writing an adapter is a different job, and only for devices that can't run a
 WebSocket client at all — a finished commercial product, or hardware that
-speaks its own protocol. That guide is planned.
+speaks its own protocol.
 
 ### Before a device connects
 

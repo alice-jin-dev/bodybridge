@@ -179,5 +179,4 @@ If it can't be programmed or reprogrammed — a finished commercial product, or
 hardware that only speaks its own protocol — then this document doesn't cover
 it. That case needs an adapter written on the bridge side, which is a
 different job: this document is about making your device speak the bridge's
-language, while an adapter makes the bridge speak your device's. A guide for
-writing one is planned.
+language, while an adapter makes the bridge speak your device's.
