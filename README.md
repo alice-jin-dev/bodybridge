@@ -221,6 +221,10 @@ Architecturally a thin core with a plugin slot — the microkernel pattern.
 
 ---
 
+## Changelog
+
+Release history is in [CHANGELOG.md](CHANGELOG.md).
+
 ## License
 
 MIT
