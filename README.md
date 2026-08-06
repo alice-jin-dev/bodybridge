@@ -21,7 +21,7 @@ one bridge with a standard slot: implement three methods, and your device is in.
 
 **Why bodybridge:**
 
-- **Zero API cost** — Runs on your existing Claude subscription. No extra token billing for the brain (LLM inference).
+- **Zero API cost (on the claude.ai path)** — Runs on your existing Claude subscription; no extra token billing for the brain (LLM inference). Other MCP clients can connect too, but as of now claude.ai is the only path where a personal subscription covers programmatic use — others bill per token. See [Deploy](#deploy).
 - **No PC required** — Cloud-hosted. No need to keep a machine running at home.
 - **Fully self-hosted** — Your data and keys stay with you.
 
@@ -36,7 +36,7 @@ Four layers, each with one job:
 | **MCP Server** | Exposes tools over streamable-http; receives tool calls from the AI |
 | **Auth** | OAuth 2.1 authorization-code flow with PKCE; stateless JWT verification on every request. Client identity via Dynamic Client Registration (default) or CIMD, switchable. Secrets live in environment variables, never in code |
 | **Device Adapter Slot** | Standard interface: `send_command` / `get_status` / `list_capabilities`. Swap devices by implementing the same interface — the bridge itself stays untouched |
-| **Reflex** *(optional)* | Device-local instant reactions, independent of the AI |
+| **Reflex** *(planned, not in V1)* | Device-local instant reactions, independent of the AI. Not implemented in V1 — the layer is reserved in the architecture, not shipped |
 
 **Design philosophy: flexible at the top, solid in the middle, rule-based at the bottom.**
 
@@ -149,8 +149,10 @@ Want to connect real hardware? See
 adapter and you don't download anything — your device just speaks the
 bridge's protocol. On an ESP32 that's five steps to a blinking LED.
 
-Already have an ESP32 and just want the firmware? Go straight to the
-[firmware guide](firmware/README.md).
+The two guides split the job: [Connecting a device](docs/connecting-a-device.md)
+is the general one — the protocol any device has to speak. The
+[firmware guide](firmware/README.md) is ESP32-specific — the sketch itself,
+the Arduino IDE setup, and flashing it to the board.
 
 ---
 
